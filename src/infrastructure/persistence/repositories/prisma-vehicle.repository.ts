@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Vehicle as PrismaVehicle } from '@prisma/client';
 import { Vehicle, VehicleStatus } from '../../../domain/vehicle/vehicle.entity';
 import { IVehicleRepository } from '../../../application/ports/vehicle.repository.port';
@@ -9,9 +9,11 @@ import { PrismaClientLike } from '../prisma/prisma-client-like';
 export class PrismaVehicleRepository implements IVehicleRepository {
   /**
    * Recebe o PrismaService (uso normal, via DI) ou o client transacional
-   * fornecido pelo Unit of Work — ambos expõem a mesma API de escrita/leitura.
+   * fornecido pelo Unit of Work — ambos expõem a mesma API de leitura/escrita.
+   * O token de injeção é explícito porque `PrismaClientLike` é um tipo
+   * estrutural, que não sobrevive à emissão de metadados do TypeScript.
    */
-  constructor(private readonly prisma: PrismaClientLike | PrismaService) {}
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaClientLike) {}
 
   async save(vehicle: Vehicle): Promise<Vehicle> {
     const created = await this.prisma.vehicle.create({

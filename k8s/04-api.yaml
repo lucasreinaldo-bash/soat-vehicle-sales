@@ -41,10 +41,9 @@ spec:
           image: vehicle-sales-api:latest
           imagePullPolicy: IfNotPresent
           command: ['npx', 'prisma', 'migrate', 'deploy']
+          # ATENÇÃO à ordem: o Kubernetes só interpola $(VAR) com variáveis
+          # declaradas ANTES na lista. DATABASE_URL precisa vir por último.
           env:
-            - name: DATABASE_URL
-              value: >-
-                postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)?schema=public
             - name: DATABASE_HOST
               valueFrom:
                 configMapKeyRef: { name: vehicle-sales-config, key: DATABASE_HOST }
@@ -60,6 +59,9 @@ spec:
             - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef: { name: vehicle-sales-secret, key: DATABASE_PASSWORD }
+            - name: DATABASE_URL
+              value: >-
+                postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)?schema=public
       containers:
         - name: api
           image: vehicle-sales-api:latest
