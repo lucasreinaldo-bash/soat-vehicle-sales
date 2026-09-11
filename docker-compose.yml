@@ -1,0 +1,37 @@
+# Sobe toda a solução localmente com um único comando: docker compose up
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: vehicle_sales_db
+    environment:
+      POSTGRES_USER: vehicles
+      POSTGRES_PASSWORD: vehicles
+      POSTGRES_DB: vehicle_sales
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vehicles -d vehicle_sales']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    container_name: vehicle_sales_api
+    environment:
+      DATABASE_URL: postgresql://vehicles:vehicles@db:5432/vehicle_sales?schema=public
+      PORT: 3000
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+    # Só inicia depois que o Postgres estiver realmente aceitando conexões,
+    # garantindo que `prisma migrate deploy` (no CMD da imagem) não falhe.
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  pgdata:

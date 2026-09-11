@@ -1,0 +1,16 @@
+# Configurações NÃO sensíveis da aplicação e do banco.
+# Dados sensíveis (senha) ficam no Secret (02-secret.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vehicle-sales-config
+  namespace: vehicle-sales
+  labels:
+    app.kubernetes.io/part-of: vehicle-sales
+data:
+  NODE_ENV: 'production'
+  PORT: '3000'
+  DATABASE_HOST: 'postgres-service'
+  DATABASE_PORT: '5432'
+  DATABASE_NAME: 'vehicle_sales'
+  DATABASE_USER: 'vehicles'

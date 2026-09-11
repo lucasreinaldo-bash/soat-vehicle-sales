@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vehicle-sales
+  labels:
+    name: vehicle-sales
+    app.kubernetes.io/part-of: vehicle-sales

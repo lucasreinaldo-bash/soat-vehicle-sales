@@ -1,0 +1,49 @@
+// Schema Prisma - Plataforma de Revenda de Veículos
+// Documentação: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Um veículo do estoque da revenda.
+/// `status` controla o ciclo de vida: AVAILABLE -> RESERVED -> SOLD,
+/// podendo voltar de RESERVED para AVAILABLE caso o pagamento seja cancelado.
+model Vehicle {
+  id        String   @id @default(cuid())
+  brand     String
+  model     String
+  year      Int
+  color     String
+  price     Decimal  @db.Decimal(10, 2)
+  status    String   @default("AVAILABLE") // AVAILABLE | RESERVED | SOLD
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  sales     Sale[]
+
+  @@index([status, price])
+  @@map("vehicles")
+}
+
+/// Registro de venda de um veículo. Nasce como PENDING_PAYMENT assim que a venda
+/// é efetuada e o gateway de pagamento é acionado; é confirmada (PAID) ou desfeita
+/// (CANCELLED) pelo webhook de pagamento, identificada pelo `paymentCode`.
+model Sale {
+  id          String   @id @default(cuid())
+  vehicleId   String   @map("vehicle_id")
+  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id])
+  buyerCpf    String   @map("buyer_cpf")
+  price       Decimal  @db.Decimal(10, 2)
+  saleDate    DateTime @map("sale_date")
+  status      String   @default("PENDING_PAYMENT") // PENDING_PAYMENT | PAID | CANCELLED
+  paymentCode String   @unique @map("payment_code")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("sales")
+}

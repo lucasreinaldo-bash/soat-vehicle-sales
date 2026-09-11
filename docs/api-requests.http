@@ -1,0 +1,125 @@
+# Coleção de requisições da API — Plataforma de Revenda de Veículos
+#
+# Formato compatível com a extensão "REST Client" (VS Code) e com o cliente HTTP
+# do JetBrains. Execute na ordem para percorrer o fluxo completo de negócio.
+# A especificação OpenAPI completa está em http://localhost:3000/docs-json
+
+@host = http://localhost:3000
+
+### 1. Cadastrar um veículo para venda
+# @name createVehicle
+POST {{host}}/vehicles
+Content-Type: application/json
+
+{
+  "brand": "Volkswagen",
+  "model": "Gol 1.0",
+  "year": 2022,
+  "color": "Prata",
+  "price": 79990.00
+}
+
+### Guarda o id do veículo recém-criado
+@vehicleId = {{createVehicle.response.body.id}}
+
+### 2. Cadastrar outro veículo (mais barato, para conferir a ordenação)
+POST {{host}}/vehicles
+Content-Type: application/json
+
+{
+  "brand": "Fiat",
+  "model": "Mobi Like",
+  "year": 2021,
+  "color": "Vermelho",
+  "price": 45900.00
+}
+
+### 3. Listar veículos à venda (ordenados do mais barato para o mais caro)
+GET {{host}}/vehicles/available
+
+### 4. Consultar um veículo específico
+GET {{host}}/vehicles/{{vehicleId}}
+
+### 5. Editar os dados do veículo
+PUT {{host}}/vehicles/{{vehicleId}}
+Content-Type: application/json
+
+{
+  "price": 74990.00,
+  "color": "Preto"
+}
+
+### 6. Efetuar a venda do veículo
+# @name sellVehicle
+POST {{host}}/vehicles/{{vehicleId}}/sale
+Content-Type: application/json
+
+{
+  "buyerCpf": "529.982.247-25"
+}
+
+### Guarda o código do pagamento devolvido pela venda
+@paymentCode = {{sellVehicle.response.body.paymentCode}}
+
+### 7. O veículo saiu da lista de disponíveis (aguardando pagamento)
+GET {{host}}/vehicles/available
+
+### 8. Webhook: o processador informa que o pagamento FOI EFETUADO
+POST {{host}}/payments/webhook
+Content-Type: application/json
+
+{
+  "paymentCode": "{{paymentCode}}",
+  "status": "PAID"
+}
+
+### 9. O veículo agora aparece na lista de vendidos
+GET {{host}}/vehicles/sold
+
+### ---------------------------------------------------------------------------
+### Cenários alternativos
+### ---------------------------------------------------------------------------
+
+### Webhook informando pagamento CANCELADO (devolve o veículo ao catálogo)
+POST {{host}}/payments/webhook
+Content-Type: application/json
+
+{
+  "paymentCode": "{{paymentCode}}",
+  "status": "CANCELLED"
+}
+
+### Erro 400 — CPF inválido
+POST {{host}}/vehicles/{{vehicleId}}/sale
+Content-Type: application/json
+
+{
+  "buyerCpf": "111.111.111-11"
+}
+
+### Erro 404 — código de pagamento inexistente
+POST {{host}}/payments/webhook
+Content-Type: application/json
+
+{
+  "paymentCode": "PAY-INEXISTENTE",
+  "status": "PAID"
+}
+
+### Erro 409 — tentar vender um veículo que não está disponível
+POST {{host}}/vehicles/{{vehicleId}}/sale
+Content-Type: application/json
+
+{
+  "buyerCpf": "529.982.247-25"
+}
+
+### ---------------------------------------------------------------------------
+### Health checks (usados pelas probes do Kubernetes)
+### ---------------------------------------------------------------------------
+
+### Liveness
+GET {{host}}/health
+
+### Readiness (valida a conexão com o banco)
+GET {{host}}/health/ready
