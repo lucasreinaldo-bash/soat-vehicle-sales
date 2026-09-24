@@ -1,5 +1,6 @@
 import { Decimal } from '@prisma/client/runtime/library';
 import { Sale, SaleStatus } from './sale.entity';
+import { InvalidSaleDateError } from './sale.errors';
 import { Cpf } from '../shared/value-objects/cpf.vo';
 
 const buildSale = () =>
@@ -34,6 +35,34 @@ describe('Sale (entidade de domínio)', () => {
   it('cancela o pagamento', () => {
     const cancelled = buildSale().cancelPayment();
     expect(cancelled.status).toBe(SaleStatus.CANCELLED);
+  });
+
+  it('aceita uma data de venda anterior (lançamento retroativo)', () => {
+    const ontem = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const sale = Sale.create({
+      id: 's1',
+      vehicleId: 'v1',
+      buyerCpf: Cpf.create('529.982.247-25'),
+      price: new Decimal('79990.00'),
+      paymentCode: 'PAY-123',
+      saleDate: ontem,
+    });
+
+    expect(sale.saleDate).toEqual(ontem);
+  });
+
+  it('rejeita data de venda no futuro', () => {
+    const amanha = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    expect(() =>
+      Sale.create({
+        id: 's1',
+        vehicleId: 'v1',
+        buyerCpf: Cpf.create('529.982.247-25'),
+        price: new Decimal('79990.00'),
+        paymentCode: 'PAY-123',
+        saleDate: amanha,
+      }),
+    ).toThrow(InvalidSaleDateError);
   });
 
   it('é imutável: transições retornam novas instâncias', () => {

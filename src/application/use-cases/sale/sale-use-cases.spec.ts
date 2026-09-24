@@ -1,5 +1,9 @@
 import { SaleStatus } from '../../../domain/sale/sale.entity';
-import { SaleAlreadyProcessedError, SaleNotFoundError } from '../../../domain/sale/sale.errors';
+import {
+  InvalidSaleDateError,
+  SaleAlreadyProcessedError,
+  SaleNotFoundError,
+} from '../../../domain/sale/sale.errors';
 import { Vehicle, VehicleStatus } from '../../../domain/vehicle/vehicle.entity';
 import {
   VehicleNotAvailableError,
@@ -80,6 +84,31 @@ describe('Fluxo de venda e pagamento', () => {
 
       expect(saleRepository.items.size).toBe(0);
       expect((await vehicleRepository.findById('v1'))!.status).toBe(VehicleStatus.AVAILABLE);
+    });
+
+    it('registra a venda com data anterior quando informada', async () => {
+      await givenAvailableVehicle();
+      const ontem = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      const { sale } = await sellVehicle.execute({
+        vehicleId: 'v1',
+        buyerCpf: VALID_CPF,
+        saleDate: ontem,
+      });
+
+      expect(sale.saleDate).toEqual(ontem);
+    });
+
+    it('rejeita data de venda no futuro', async () => {
+      await givenAvailableVehicle();
+
+      await expect(
+        sellVehicle.execute({
+          vehicleId: 'v1',
+          buyerCpf: VALID_CPF,
+          saleDate: new Date(Date.now() + 86400000),
+        }),
+      ).rejects.toThrow(InvalidSaleDateError);
     });
 
     it('impede a venda em duplicidade do mesmo veículo', async () => {

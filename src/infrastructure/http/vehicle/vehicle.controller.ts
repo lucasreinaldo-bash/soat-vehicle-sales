@@ -93,21 +93,26 @@ export class VehicleController {
   @ApiOperation({
     summary: 'Efetuar a venda de um veículo',
     description:
-      'Registra a venda (CPF do comprador + data da venda gerada pelo sistema), solicita a cobrança ao ' +
+      'Registra a venda (CPF do comprador e data da venda, esta atribuída pelo sistema se omitida), ' +
+      'solicita a cobrança ao ' +
       'processador de pagamento e reserva o veículo. A venda é concluída quando o processador de ' +
       'pagamento notificar o webhook POST /payments/webhook usando o paymentCode retornado aqui.',
   })
   @ApiParam({ name: 'id', description: 'Identificador do veículo' })
   @ApiBody({ type: SellVehicleDto })
   @ApiResponse({ status: 201, description: 'Venda registrada', type: SellVehicleResponseDto })
-  @ApiResponse({ status: 400, description: 'CPF inválido' })
+  @ApiResponse({ status: 400, description: 'CPF inválido ou data da venda no futuro' })
   @ApiResponse({ status: 404, description: 'Veículo não encontrado' })
   @ApiResponse({ status: 409, description: 'Veículo não está disponível para venda' })
   async sell(
     @Param('id') id: string,
     @Body() dto: SellVehicleDto,
   ): Promise<SellVehicleResponseDto> {
-    const { sale } = await this.sellVehicle.execute({ vehicleId: id, buyerCpf: dto.buyerCpf });
+    const { sale } = await this.sellVehicle.execute({
+      vehicleId: id,
+      buyerCpf: dto.buyerCpf,
+      saleDate: dto.saleDate ? new Date(dto.saleDate) : undefined,
+    });
     return SellVehicleResponseDto.fromDomain(sale);
   }
 }

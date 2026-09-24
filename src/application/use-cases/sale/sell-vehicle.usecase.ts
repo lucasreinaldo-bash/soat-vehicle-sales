@@ -18,6 +18,8 @@ import {
 export interface SellVehicleInput {
   vehicleId: string;
   buyerCpf: string;
+  /** Opcional: informe apenas para registrar uma venda ocorrida em data anterior. */
+  saleDate?: Date;
 }
 
 export interface SellVehicleOutput {
@@ -41,9 +43,11 @@ export interface SellVehicleOutput {
  *  2. A disponibilidade do veículo é revalidada DENTRO da transação, já que o
  *     estado pode ter mudado entre a leitura inicial e a escrita.
  *
- * A data da venda (`saleDate`) é definida pelo próprio sistema no momento do
- * registro, e não recebida do cliente da API: evita inconsistência/fraude de
- * datas e mantém a trilha auditável.
+ * A data da venda (`saleDate`) é, por padrão, o instante do registro — a venda é
+ * um fato observado pelo sistema, não uma preferência do chamador. O campo pode
+ * ser informado explicitamente para lançar uma venda ocorrida em data anterior
+ * (ex.: negociação fechada na loja física e digitada depois); datas futuras são
+ * rejeitadas pelo domínio.
  */
 @Injectable()
 export class SellVehicleUseCase {
@@ -88,6 +92,7 @@ export class SellVehicleUseCase {
         buyerCpf,
         price: current.price,
         paymentCode,
+        saleDate: input.saleDate,
       });
 
       const savedSale = await sales.save(sale);

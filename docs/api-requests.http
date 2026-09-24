@@ -89,6 +89,24 @@ Content-Type: application/json
   "status": "CANCELLED"
 }
 
+### Venda informando a data explicitamente (lançamento retroativo)
+POST {{host}}/vehicles/{{vehicleId}}/sale
+Content-Type: application/json
+
+{
+  "buyerCpf": "529.982.247-25",
+  "saleDate": "2026-09-01T10:00:00.000Z"
+}
+
+### Erro 400 — data da venda no futuro
+POST {{host}}/vehicles/{{vehicleId}}/sale
+Content-Type: application/json
+
+{
+  "buyerCpf": "529.982.247-25",
+  "saleDate": "2030-01-01T00:00:00.000Z"
+}
+
 ### Erro 400 — CPF inválido
 POST {{host}}/vehicles/{{vehicleId}}/sale
 Content-Type: application/json

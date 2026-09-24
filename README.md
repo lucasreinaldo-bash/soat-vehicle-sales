@@ -30,7 +30,7 @@ princípios **SOLID**, com empacotamento em **Docker** e publicação em **Kuber
 |---|---|---|
 | 1 | Cadastrar um veículo para venda (marca, modelo, ano, cor, preço) | `POST /vehicles` — [`CreateVehicleUseCase`](src/application/use-cases/vehicle/create-vehicle.usecase.ts) |
 | 2 | Editar os dados do veículo | `PUT /vehicles/{id}` — [`UpdateVehicleUseCase`](src/application/use-cases/vehicle/update-vehicle.usecase.ts) |
-| 3 | Efetuar a venda de um veículo (CPF do comprador, data da venda) | `POST /vehicles/{id}/sale` — [`SellVehicleUseCase`](src/application/use-cases/sale/sell-vehicle.usecase.ts) |
+| 3 | Efetuar a venda de um veículo (CPF do comprador, data da venda) | `POST /vehicles/{id}/sale` — [`SellVehicleUseCase`](src/application/use-cases/sale/sell-vehicle.usecase.ts). O CPF é obrigatório e validado; a data da venda é atribuída pelo sistema por padrão e pode ser informada para lançamento retroativo |
 | 4 | Listagem de veículos à venda, ordenada por preço (crescente) | `GET /vehicles/available` — [`ListAvailableVehiclesUseCase`](src/application/use-cases/vehicle/list-available-vehicles.usecase.ts) |
 | 5 | Listagem de veículos vendidos, ordenada por preço (crescente) | `GET /vehicles/sold` — [`ListSoldVehiclesUseCase`](src/application/use-cases/vehicle/list-sold-vehicles.usecase.ts) |
 | 6 | Webhook de pagamento (efetuado/cancelado a partir do código do pagamento) | `POST /payments/webhook` — [`ProcessPaymentWebhookUseCase`](src/application/use-cases/sale/process-payment-webhook.usecase.ts) |
@@ -65,7 +65,7 @@ que guiou toda a modelagem.
 |---|---|---|
 | `id`, `createdAt`, `updatedAt` | inferido | Identidade e auditoria |
 | `buyerCpf` | enunciado | CPF de quem comprou, validado por Value Object |
-| `saleDate` | enunciado | Data da venda, atribuída pelo sistema no ato do registro |
+| `saleDate` | enunciado | Data da venda: o instante do registro por padrão, ou uma data anterior informada explicitamente |
 | `price` | **inferido** | Preço congelado no momento da venda (o preço de tabela pode mudar depois) |
 | `vehicleId` | **inferido** | Qual veículo foi vendido |
 | `paymentCode` | **inferido** | **Chave da integração**: é o "código do pagamento" que o webhook usa para localizar a venda |
@@ -101,8 +101,10 @@ stateDiagram-v2
    retorna **409 Conflict**.
 2. O CPF do comprador é validado (formato + dígitos verificadores) antes de qualquer escrita;
    CPF inválido retorna **400** e **não cria venda nem reserva o veículo**.
-3. A `saleDate` é atribuída pelo servidor, nunca recebida do cliente — evita adulteração de data e
-   mantém a trilha de auditoria consistente.
+3. A `saleDate` é atribuída pelo servidor por padrão (a venda é um fato observado pelo sistema).
+   Pode ser informada no corpo da requisição para lançar uma venda ocorrida em data anterior — por
+   exemplo, negociação fechada na loja física e digitada depois. **Datas futuras são rejeitadas**
+   (400), o que impede adulteração para frente no tempo.
 4. O webhook é **idempotente por rejeição**: uma venda que já saiu de `PENDING_PAYMENT` recusa nova
    notificação com **409**, protegendo contra reentrega do processador de pagamento.
 5. Pagamento cancelado **devolve o veículo ao catálogo** — ele volta a `AVAILABLE` e pode ser
@@ -467,5 +469,7 @@ Resumo das escolhas não óbvias (o racional completo está em [`docs/ARCHITECTU
    explícito e livre de efeitos colaterais acidentais.
 6. **Listagem de vendidos sem o CPF do comprador.** Dado pessoal (LGPD) não é exposto em endpoint de
    catálogo; ele só aparece na resposta da própria operação de venda.
-7. **`saleDate` definida pelo servidor.** Data de venda é fato do sistema, não entrada do cliente.
+7. **`saleDate` com padrão no servidor, mas informável.** Data de venda é um fato observado pelo
+   sistema, então o padrão é o instante do registro. Ainda assim o campo é aceito, porque a revenda
+   precisa lançar vendas fechadas fora da plataforma; o domínio rejeita datas futuras.
 8. **Webhook idempotente por rejeição.** Reentrega de notificação não corrompe o estado da venda.

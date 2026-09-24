@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class SellVehicleDto {
   @ApiProperty({
@@ -9,4 +9,14 @@ export class SellVehicleDto {
   @IsString()
   @IsNotEmpty()
   buyerCpf: string;
+
+  @ApiPropertyOptional({
+    example: '2026-09-23T14:30:00.000Z',
+    description:
+      'Data da venda (ISO 8601). Se omitida, o sistema registra o instante atual — o caso normal. ' +
+      'Informe apenas para lançar uma venda ocorrida em data anterior. Datas futuras são rejeitadas.',
+  })
+  @IsOptional()
+  @IsDateString()
+  saleDate?: string;
 }

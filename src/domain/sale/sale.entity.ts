@@ -1,5 +1,6 @@
 import { Decimal } from '@prisma/client/runtime/library';
 import { Cpf } from '../shared/value-objects/cpf.vo';
+import { InvalidSaleDateError } from './sale.errors';
 
 export enum SaleStatus {
   /** Venda criada, aguardando confirmação do gateway de pagamento via webhook. */
@@ -39,15 +40,27 @@ export class Sale {
       buyerCpf: Cpf;
       price: Decimal;
       paymentCode: string;
+      /**
+       * Data da venda. Omitida (caso normal), é o instante do registro — a venda
+       * é um fato observado pelo sistema. Aceita explicitamente para permitir
+       * lançamento retroativo de uma venda ocorrida fora da plataforma; nunca
+       * pode estar no futuro.
+       */
+      saleDate?: Date;
     },
     now: Date = new Date(),
   ): Sale {
+    const saleDate = params.saleDate ?? now;
+    if (saleDate.getTime() > now.getTime()) {
+      throw new InvalidSaleDateError(saleDate);
+    }
+
     return new Sale({
       id: params.id,
       vehicleId: params.vehicleId,
       buyerCpf: params.buyerCpf.value(),
       price: params.price,
-      saleDate: now,
+      saleDate,
       status: SaleStatus.PENDING_PAYMENT,
       paymentCode: params.paymentCode,
       createdAt: now,

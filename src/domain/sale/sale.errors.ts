@@ -1,4 +1,4 @@
-import { ConflictError, NotFoundError } from '../common/errors';
+import { ConflictError, NotFoundError, ValidationError } from '../common/errors';
 
 export class SaleNotFoundError extends NotFoundError {
   constructor(identifier: string) {
@@ -11,5 +11,11 @@ export class SaleAlreadyProcessedError extends ConflictError {
     super(
       `Pagamento ${paymentCode} já foi processado anteriormente (status atual: ${currentStatus})`,
     );
+  }
+}
+
+export class InvalidSaleDateError extends ValidationError {
+  constructor(saleDate: Date) {
+    super(`Data da venda inválida: ${saleDate.toISOString()} (não pode estar no futuro)`);
   }
 }
