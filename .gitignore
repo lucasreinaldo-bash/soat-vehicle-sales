@@ -7,3 +7,4 @@ coverage
 npm-debug.log*
 .vscode/*
 !.vscode/extensions.json
+*.tsbuildinfo

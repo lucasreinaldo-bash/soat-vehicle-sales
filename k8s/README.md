@@ -71,6 +71,46 @@ cluster.
 disponibilidade durante o deploy). O PostgreSQL usa `Recreate`, porque o volume `ReadWriteOnce` não
 pode ser montado por dois pods ao mesmo tempo.
 
+
+## Validação executada no cluster
+
+Resultados obtidos em minikube (Kubernetes v1.34), com a solução aplicada por `./k8s/deploy.sh`:
+
+| Verificação | Resultado |
+|---|---|
+| Rollout completo | `postgres` 1/1 e `vehicle-sales-api` 2/2 disponíveis |
+| initContainer `wait-for-db` | Aguardou e obteve `postgres-service:5432 - accepting connections` |
+| initContainer `run-migrations` | `All migrations have been successfully applied.` |
+| `DATABASE_URL` composta em runtime | `postgresql://vehicles:****@postgres-service:5432/vehicle_sales?schema=public` |
+| Separação ConfigMap × Secret | ConfigMap sem dado sensível; senha somente no Secret |
+| Fluxo de negócio via Service | Cadastro → listagens ordenadas → venda → webhook `PAID` → lista de vendidos |
+| Persistência (PVC) | Pod do PostgreSQL deletado; os veículos e a venda sobreviveram ao pod novo |
+| HPA | `cpu: 2%/70%, memory: 16%/80%`, `ScalingActive=True (ValidMetricFound)` |
+| Rolling update sob carga | **445 requisições, 0 falhas** durante um `rollout restart` completo |
+| Exposição dos serviços | `postgres-service` ClusterIP; `vehicle-sales-api-service` NodePort |
+
+### Cuidado ao demonstrar o rolling update
+
+`kubectl port-forward` **não é um balanceador**: ele se prende a um único pod escolhido no
+momento em que o túnel é aberto. Se esse pod for terminado durante um `rollout restart`, o
+encaminhamento cai com `error: lost connection to pod` e as requisições passam a falhar — o que
+parece downtime da aplicação, mas é limitação da ferramenta.
+
+Ao medir (ou demonstrar) disponibilidade durante um deploy, gere carga **de dentro do cluster**,
+atravessando o Service:
+
+```bash
+kubectl -n vehicle-sales run loadtest --image=vehicle-sales-api:latest \
+  --image-pull-policy=IfNotPresent --restart=Never --command -- \
+  sh -c 'while true; do wget -q -O- http://vehicle-sales-api-service/health >/dev/null \
+    && echo -n . || echo -n X; sleep 0.2; done'
+
+kubectl -n vehicle-sales logs -f loadtest      # em outro terminal
+```
+
+Foi exatamente essa diferença que separou "98 falhas" (medindo por port-forward) de
+"0 falhas" (medindo pelo Service) no mesmo rollout.
+
 ## Removendo
 
 ```bash

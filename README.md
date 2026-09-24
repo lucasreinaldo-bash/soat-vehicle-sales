@@ -131,7 +131,7 @@ flowchart TB
     subgraph APP["⚙️ Application — casos de uso"]
         direction LR
         UC["Use Cases<br/>CreateVehicle, UpdateVehicle,<br/>ListAvailable, ListSold,<br/>SellVehicle, ProcessPaymentWebhook"]
-        PORTS["Ports (interfaces)<br/>IVehicleRepository<br/>ISaleRepository<br/>IPaymentGateway"]
+        PORTS["Ports (interfaces)<br/>IVehicleRepository<br/>ISaleRepository<br/>IPaymentGateway<br/>IUnitOfWork"]
     end
 
     subgraph DOMAIN["💛 Domain — regras de negócio"]
@@ -402,6 +402,12 @@ kubectl -n vehicle-sales get hpa
 
 Para remover tudo: `./k8s/cleanup.sh`.
 
+A solução foi verificada em um cluster minikube real: rollout de todas as réplicas, migrations
+aplicadas pelo initContainer, fluxo de negócio completo através do Service, persistência dos dados
+após a destruição do pod do PostgreSQL, HPA coletando métricas de CPU e memória, e **445 requisições
+sem nenhuma falha durante um rolling update completo**. As evidências e o método de medição estão em
+[`k8s/README.md`](k8s/README.md#validação-executada-no-cluster).
+
 ### Decisões relevantes dos manifestos
 
 - **Migrations em `initContainer`**: rodam uma vez por rollout, antes de qualquer réplica subir, em
@@ -427,11 +433,11 @@ Para remover tudo: `./k8s/cleanup.sh`.
 │   │   ├── shared/value-objects/      #    Value Object Cpf
 │   │   └── common/errors.ts           #    Hierarquia de erros de domínio
 │   ├── application/                   # ⚙️ Casos de uso e contratos
-│   │   ├── ports/                     #    Interfaces (repositórios, gateway de pagamento)
+│   │   ├── ports/                     #    Interfaces (repositórios, gateway, unit of work)
 │   │   └── use-cases/                 #    Um caso de uso por arquivo
 │   └── infrastructure/                # 🔌 Detalhes substituíveis
 │       ├── http/                      #    Controllers, DTOs, filtro de exceções, Swagger
-│       ├── persistence/               #    Prisma + implementações dos repositórios
+│       ├── persistence/               #    Prisma, repositórios e Unit of Work
 │       └── payment/                   #    Adapter do gateway de pagamento
 ├── prisma/                            # Schema, migrations e seed
 ├── k8s/                               # Manifestos Kubernetes

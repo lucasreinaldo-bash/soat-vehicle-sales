@@ -4,7 +4,11 @@
     // Fixa a raiz em src/ para que a saída seja dist/main.js (e não dist/src/main.js).
     // Sem isso, qualquer .ts fora de src/ (ex.: prisma/seed.ts) deslocaria o rootDir
     // inferido e quebraria o `node dist/main` da imagem Docker.
-    "rootDir": "./src"
+    "rootDir": "./src",
+    // O cache incremental precisa ficar DENTRO de dist/: o `deleteOutDir` do Nest
+    // apaga apenas dist/, então um tsbuildinfo fora dele sobreviveria e faria o
+    // tsc julgar tudo atualizado — build com exit 0 e nenhum arquivo emitido.
+    "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "test", "dist", "prisma", "**/*spec.ts"]
