@@ -34,7 +34,7 @@ opaco do comprador que vem no token.
 - [Fluxo completo de ponta a ponta](#fluxo-completo-de-ponta-a-ponta)
 - [Como testar](#como-testar)
 - [Implantação em Kubernetes](#implantação-em-kubernetes)
-- [Fluxo de mudanças: Pull Requests e CI](#fluxo-de-mudanças-pull-requests-e-ci)
+- [Fluxo de mudanças: Pull Requests, CI e deploy automatizado](#fluxo-de-mudanças-pull-requests-ci-e-deploy-automatizado)
 - [Estrutura do repositório](#estrutura-do-repositório)
 - [Decisões de arquitetura](#decisões-de-arquitetura)
 
@@ -65,7 +65,7 @@ opaco do comprador que vem no token.
 | 6 | Listagem de veículos vendidos, por preço crescente | `GET /vehicles/sold` (pública): [`ListSoldVehiclesUseCase`](src/application/use-cases/vehicle/list-sold-vehicles.usecase.ts) |
 | 7 | Cadastro e autorização do comprador separados, em serviço apartado | Keycloak no repositório [soat-vehicle-identity](https://github.com/lucasreinaldo-bash/soat-vehicle-identity). Esta API só valida tokens: [`src/infrastructure/http/auth/`](src/infrastructure/http/auth/) |
 | 8 | Dados do cliente separados dos dados transacionais da venda | Bancos distintos e redes distintas. A venda guarda só o `buyer_id`; [migration que remove o CPF](prisma/migrations/20261030000000_buyer_id_sem_cpf/migration.sql) |
-| 9 | Mudanças por CI/CD e Pull Requests | [`.github/workflows/`](.github/workflows/), `main` protegida. Ver [Fluxo de mudanças](#fluxo-de-mudanças-pull-requests-e-ci) |
+| 9 | Mudanças por CI/CD e Pull Requests, com deploy automatizado | [`ci.yml`](.github/workflows/ci.yml) em todo PR e [`cd.yml`](.github/workflows/cd.yml) a cada merge, com a `main` protegida. Ver [Fluxo de mudanças](#fluxo-de-mudanças-pull-requests-ci-e-deploy-automatizado) |
 | 10 | README, código funcional e Kubernetes | Este arquivo, [`k8s/`](k8s/), [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) |
 
 ---
@@ -527,8 +527,25 @@ Os cenários incluem:
 - isolamento das compras entre clientes;
 - a verificação de que a tabela de vendas não tem coluna de CPF.
 
-O repositório de identidade tem testes de fumaça próprios contra o Keycloak real, que rodam no CI
-dele. Entre outras coisas, eles verificam que o CPF não aparece no token.
+### Teste de contrato contra o Keycloak real
+
+```bash
+./scripts/fluxo-ponta-a-ponta.sh
+```
+
+Com as duas stacks no ar, o script percorre o fluxo inteiro sem nenhum dublê:
+
+- cadastra um cliente no Keycloak;
+- o operador cadastra um veículo;
+- o cliente compra;
+- o webhook assinado efetiva a compra;
+- confere `/vehicles/sold` e `/me/purchases`.
+
+Ele também confere as recusas (401, 403 e webhook com segredo errado). O CI executa esse script a
+cada Pull Request, contra o Keycloak baixado do repositório de identidade.
+
+O repositório de identidade tem testes de fumaça próprios, que rodam no CI dele. Entre outras
+coisas, eles verificam que o CPF não aparece no token.
 
 ---
 
@@ -557,8 +574,14 @@ minikube addons enable metrics-server
 ./k8s/deploy.sh
 ```
 
-O script faz o build da imagem dentro do cluster, aplica os manifestos e espera o rollout. Para
-acessar a API:
+Suba antes o serviço de identidade, com o `k8s/deploy.sh` do repositório dele.
+
+O script faz o build da imagem dentro do cluster, com a tag do commit atual
+(`vehicle-sales-api:<sha>`). Depois aplica os manifestos e espera o rollout. A tag por commit é o
+que faz cada versão nova gerar um rollout e permite saber qual commit está no ar. Esse é o mesmo
+script que o pipeline de CD executa.
+
+Para acessar a API:
 
 ```bash
 kubectl -n vehicle-sales port-forward svc/vehicle-sales-api-service 3000:80
@@ -588,22 +611,80 @@ Para remover tudo: `./k8s/cleanup.sh`. As evidências de validação no cluster 
 
 ---
 
-## Fluxo de mudanças: Pull Requests e CI
+## Fluxo de mudanças: Pull Requests, CI e deploy automatizado
 
-Toda mudança entra por **Pull Request**. A branch `main` é protegida, inclusive para
-administradores:
+Toda mudança entra por **Pull Request** e chega ao cluster sem nenhum passo manual:
+
+```mermaid
+flowchart LR
+    PR["Pull Request"] --> CI["CI<br/>4 jobs obrigatórios"]
+    CI -->|verde| M["merge na main<br/>(squash)"]
+    M --> CI2["CI na main"]
+    CI2 -->|verde| CD["CD<br/>runner self-hosted"]
+    CD --> B["build da imagem<br/>vehicle-sales-api:sha"]
+    B --> R["kubectl apply<br/>+ rollout"]
+    R --> V["verificação<br/>pós-deploy"]
+```
+
+### Proteções da `main`
+
+A branch `main` é protegida, inclusive para administradores:
 
 - não aceita push direto;
 - exige histórico linear e merge por squash;
-- só aceita merge com o CI verde.
+- só aceita merge com os quatro jobs do CI verdes.
 
-O CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) roda a cada Pull Request:
+### CI: a cada Pull Request
+
+O CI está em [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 | Job | O que garante |
 |---|---|
 | Lint, build e testes unitários | O código compila, segue o padrão e as regras estão cobertas |
 | Testes end-to-end | A API funciona contra um PostgreSQL real, com tokens e webhooks assinados |
+| Contrato com o serviço de identidade | O fluxo completo funciona contra o **Keycloak real**, baixado do outro repositório |
 | Build da imagem Docker | A imagem que vai para o cluster continua construível |
+
+### CD: a cada merge na `main`
+
+O CD está em [`.github/workflows/cd.yml`](.github/workflows/cd.yml). Ele dispara quando o CI
+termina com sucesso na `main` e roda num **runner self-hosted**, na máquina que hospeda o
+minikube. O runner usa o rótulo `minikube` e o environment `minikube`, que só aceita deploys a
+partir de branch protegida. O job:
+
+1. faz checkout exatamente do commit que passou no CI;
+2. executa [`k8s/deploy.sh`](k8s/deploy.sh), que constrói a imagem com a tag do commit, aplica os
+   manifestos e espera o rollout;
+3. executa [`scripts/verificar-deploy.sh`](scripts/verificar-deploy.sh), que confere:
+   - que o Deployment usa a imagem do commit;
+   - que todas as réplicas estão prontas;
+   - liveness e readiness;
+   - que a API valida um **token real** emitido pelo Keycloak do cluster.
+
+A verificação só lê dados e não cria nada no catálogo.
+
+Por que um runner self-hosted? O cluster é local. Um runner hospedado pelo GitHub não alcança o
+minikube, e expor o cluster na internet seria pior. Para o runner não executar código de
+terceiros:
+
+- o CD nunca dispara em Pull Request;
+- PRs de contribuidores externos exigem aprovação antes de qualquer workflow rodar;
+- os jobs de CI rodam nos runners do GitHub.
+
+Para reexecutar um deploy manualmente: **Actions → CD → Run workflow**.
+
+### Configurando o runner (uma vez por máquina)
+
+Em **Settings → Actions → Runners → New self-hosted runner**, siga as instruções para macOS ou
+Linux. Ao configurar, adicione o rótulo `minikube`:
+
+```bash
+./config.sh --url https://github.com/lucasreinaldo-bash/soat-vehicle-sales --token <token> --labels minikube
+./svc.sh install
+./svc.sh start
+```
+
+A máquina precisa de `docker`, `minikube`, `kubectl` e `jq` no `PATH`.
 
 O histórico de PRs deste repositório mostra a evolução da Fase 3, um passo por PR.
 
@@ -631,10 +712,13 @@ O histórico de PRs deste repositório mostra a evolução da Fase 3, um passo p
 │       └── payment/                   #    Adapter do gateway de pagamento
 ├── prisma/                            # Schema, migrations e seed
 ├── k8s/                               # Manifestos Kubernetes
-├── scripts/simular-pagamento.sh       # Simula o processador de pagamento (webhook assinado)
+├── scripts/
+│   ├── simular-pagamento.sh           # Simula o processador de pagamento (webhook assinado)
+│   ├── fluxo-ponta-a-ponta.sh         # Fluxo completo contra o Keycloak real (CI)
+│   └── verificar-deploy.sh            # Verificação pós-deploy no cluster (CD)
 ├── test/e2e/                          # Testes end-to-end
 ├── docs/                              # Arquitetura e coleção de requisições
-├── .github/workflows/                 # CI
+├── .github/workflows/                 # CI (Pull Requests) e CD (deploy no cluster)
 ├── Dockerfile                         # Build multi-stage
 └── docker-compose.yml                 # Stack local da API
 ```

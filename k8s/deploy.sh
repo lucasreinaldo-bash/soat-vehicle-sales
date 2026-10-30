@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Sobe a solução completa em um cluster Kubernetes local (minikube/kind/Docker Desktop).
+# É o mesmo script executado pelo pipeline de CD a cada merge na main.
 set -euo pipefail
 
 NAMESPACE="vehicle-sales"
-IMAGE="vehicle-sales-api:latest"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Cada deploy usa uma imagem com a tag do commit. Com uma tag fixa (latest), o
+# Deployment não muda entre versões e o Kubernetes não faria rollout.
+TAG="${IMAGE_TAG:-$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo latest)}"
+IMAGE="vehicle-sales-api:${TAG}"
 
 echo "==> 1/4 Construindo a imagem da API (${IMAGE})"
 if command -v minikube >/dev/null 2>&1 && minikube status >/dev/null 2>&1; then
@@ -19,7 +24,7 @@ kubectl apply -f "${ROOT_DIR}/k8s/00-namespace.yaml"
 kubectl apply -f "${ROOT_DIR}/k8s/01-configmap.yaml"
 kubectl apply -f "${ROOT_DIR}/k8s/02-secret.yaml"
 kubectl apply -f "${ROOT_DIR}/k8s/03-postgres.yaml"
-kubectl apply -f "${ROOT_DIR}/k8s/04-api.yaml"
+sed "s|vehicle-sales-api:latest|${IMAGE}|g" "${ROOT_DIR}/k8s/04-api.yaml" | kubectl apply -f -
 kubectl apply -f "${ROOT_DIR}/k8s/05-hpa.yaml" || echo "    (HPA ignorado: metrics-server indisponível)"
 
 echo "==> 3/4 Aguardando o PostgreSQL ficar pronto"

@@ -58,3 +58,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t vehicle-sales-api:ci .
+
+  contract:
+    name: Contrato com o serviço de identidade
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Baixa o serviço de identidade (repositório apartado)
+        uses: actions/checkout@v4
+        with:
+          repository: lucasreinaldo-bash/soat-vehicle-identity
+          path: identity
+      - name: Sobe o Keycloak real
+        working-directory: identity
+        run: docker compose up -d --wait
+      - name: Sobe a API de vendas
+        run: docker compose up -d --build --wait
+      - name: Fluxo ponta a ponta com tokens reais
+        run: ./scripts/fluxo-ponta-a-ponta.sh
+      - name: Logs em caso de falha
+        if: failure()
+        run: |
+          docker compose logs api --tail 100
+          docker compose -f identity/docker-compose.yml logs keycloak --tail 100

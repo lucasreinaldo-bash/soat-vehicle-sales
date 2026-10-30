@@ -1,0 +1,46 @@
+name: CD
+
+# Deploy contínuo no cluster Kubernetes local (minikube).
+#
+# Só roda depois de o CI passar na main, ou seja, depois de um Pull Request
+# aprovado e integrado. Nunca roda em Pull Request: o runner é a máquina que
+# hospeda o cluster, e código de PR não deve chegar até ela.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Um deploy por vez; um deploy em andamento nunca é cancelado no meio.
+concurrency:
+  group: deploy-vehicle-sales
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy no Kubernetes
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, minikube]
+    environment: minikube
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - name: Cluster acessível
+        run: kubectl cluster-info
+      - name: Build da imagem e rollout
+        run: IMAGE_TAG="${SHA::7}" ./k8s/deploy.sh
+      - name: Verificação pós-deploy
+        run: ./scripts/verificar-deploy.sh "vehicle-sales-api:${SHA::7}"
+      - name: Diagnóstico em caso de falha
+        if: failure()
+        run: |
+          kubectl -n vehicle-sales get pods -o wide
+          kubectl -n vehicle-sales describe deploy vehicle-sales-api | tail -30
+          kubectl -n vehicle-sales logs -l app=vehicle-sales-api --tail=50 --all-containers
