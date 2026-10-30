@@ -1,6 +1,5 @@
 import { Decimal } from '@prisma/client/runtime/library';
-import { Cpf } from '../shared/value-objects/cpf.vo';
-import { InvalidSaleDateError } from './sale.errors';
+import { InvalidBuyerError } from './sale.errors';
 
 export enum SaleStatus {
   /** Venda criada, aguardando confirmação do gateway de pagamento via webhook. */
@@ -14,7 +13,12 @@ export enum SaleStatus {
 export interface SaleProps {
   id: string;
   vehicleId: string;
-  buyerCpf: string;
+  /**
+   * Identificador opaco do comprador no serviço de identidade (o `sub` do token).
+   * Nenhum dado pessoal — nome, e-mail e CPF ficam apartados, no serviço de
+   * identidade, separados dos dados transacionais das vendas.
+   */
+  buyerId: string;
   price: Decimal;
   saleDate: Date;
   status: SaleStatus;
@@ -24,10 +28,10 @@ export interface SaleProps {
 }
 
 /**
- * Entidade de domínio Sale. Representa a intenção/registro de venda de um
- * veículo específico. É criada em PENDING_PAYMENT e só se torna definitiva
- * (PAID) quando o processador de pagamento confirma via webhook — o que também
- * é o gatilho para o Vehicle mudar para SOLD (ver SellVehicleUseCase e
+ * Entidade de domínio Sale. Representa a compra de um veículo por um cliente
+ * cadastrado. É criada em PENDING_PAYMENT e só se torna definitiva (PAID)
+ * quando o processador de pagamento confirma via webhook — o que também é o
+ * gatilho para o Vehicle mudar para SOLD (ver PurchaseVehicleUseCase e
  * ProcessPaymentWebhookUseCase).
  */
 export class Sale {
@@ -37,30 +41,24 @@ export class Sale {
     params: {
       id: string;
       vehicleId: string;
-      buyerCpf: Cpf;
+      buyerId: string;
       price: Decimal;
       paymentCode: string;
-      /**
-       * Data da venda. Omitida (caso normal), é o instante do registro — a venda
-       * é um fato observado pelo sistema. Aceita explicitamente para permitir
-       * lançamento retroativo de uma venda ocorrida fora da plataforma; nunca
-       * pode estar no futuro.
-       */
-      saleDate?: Date;
     },
     now: Date = new Date(),
   ): Sale {
-    const saleDate = params.saleDate ?? now;
-    if (saleDate.getTime() > now.getTime()) {
-      throw new InvalidSaleDateError(saleDate);
+    if (!params.buyerId || params.buyerId.trim().length === 0) {
+      throw new InvalidBuyerError();
     }
 
+    // A data da venda é o instante da compra: o cliente compra pela internet,
+    // então não há lançamento retroativo — a data é um fato do servidor.
     return new Sale({
       id: params.id,
       vehicleId: params.vehicleId,
-      buyerCpf: params.buyerCpf.value(),
+      buyerId: params.buyerId,
       price: params.price,
-      saleDate,
+      saleDate: now,
       status: SaleStatus.PENDING_PAYMENT,
       paymentCode: params.paymentCode,
       createdAt: now,
@@ -90,8 +88,8 @@ export class Sale {
   get vehicleId(): string {
     return this.props.vehicleId;
   }
-  get buyerCpf(): string {
-    return this.props.buyerCpf;
+  get buyerId(): string {
+    return this.props.buyerId;
   }
   get price(): Decimal {
     return this.props.price;

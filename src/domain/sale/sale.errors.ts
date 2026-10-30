@@ -14,8 +14,8 @@ export class SaleAlreadyProcessedError extends ConflictError {
   }
 }
 
-export class InvalidSaleDateError extends ValidationError {
-  constructor(saleDate: Date) {
-    super(`Data da venda inválida: ${saleDate.toISOString()} (não pode estar no futuro)`);
+export class InvalidBuyerError extends ValidationError {
+  constructor() {
+    super('A compra exige um comprador identificado.');
   }
 }

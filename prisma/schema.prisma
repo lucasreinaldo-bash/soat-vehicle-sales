@@ -29,14 +29,15 @@ model Vehicle {
   @@map("vehicles")
 }
 
-/// Registro de venda de um veículo. Nasce como PENDING_PAYMENT assim que a venda
-/// é efetuada e o gateway de pagamento é acionado; é confirmada (PAID) ou desfeita
-/// (CANCELLED) pelo webhook de pagamento, identificada pelo `paymentCode`.
+/// Compra de um veículo por um cliente cadastrado. Nasce como PENDING_PAYMENT e é
+/// efetivada (PAID) ou desfeita (CANCELLED) pelo webhook de pagamento, pelo
+/// `paymentCode`. O comprador é só um identificador opaco do serviço de
+/// identidade: nenhum dado pessoal é guardado aqui.
 model Sale {
   id          String   @id @default(cuid())
   vehicleId   String   @map("vehicle_id")
   vehicle     Vehicle  @relation(fields: [vehicleId], references: [id])
-  buyerCpf    String   @map("buyer_cpf")
+  buyerId     String   @map("buyer_id")
   price       Decimal  @db.Decimal(10, 2)
   saleDate    DateTime @map("sale_date")
   status      String   @default("PENDING_PAYMENT") // PENDING_PAYMENT | PAID | CANCELLED
@@ -45,5 +46,6 @@ model Sale {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   @@index([status])
+  @@index([buyerId])
   @@map("sales")
 }

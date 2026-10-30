@@ -30,6 +30,9 @@ services:
       AUTH_ISSUER: http://localhost:8180/realms/vehicle-sales
       AUTH_AUDIENCE: vehicle-sales-api
       AUTH_JWKS_URI: http://keycloak:8080/realms/vehicle-sales/protocol/openid-connect/certs
+      # Segredo compartilhado com o processador de pagamento (assinatura HMAC do
+      # webhook). Valor de desenvolvimento — em produção, vem de um cofre.
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-segredo-webhook-desenvolvimento}
     ports:
       - '3000:3000'
     # Só inicia depois que o Postgres estiver realmente aceitando conexões,
@@ -38,6 +41,15 @@ services:
       db:
         condition: service_healthy
     restart: on-failure
+    # Sem healthcheck, 'docker compose up --wait' devolve o controle assim que o
+    # container RODA — antes de a aplicação aplicar as migrations e escutar a
+    # porta. O /health/ready só responde quando a API alcança o banco.
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/health/ready >/dev/null || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     # A API participa das duas redes; o banco de vendas, só da sua. Os bancos
     # de vendas e de identidade nunca compartilham rede.
     networks: [default, identity]

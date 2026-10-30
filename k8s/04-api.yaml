@@ -88,6 +88,10 @@ spec:
             - name: AUTH_JWKS_URI
               valueFrom:
                 configMapKeyRef: { name: vehicle-sales-config, key: AUTH_JWKS_URI }
+            # Dado sensível: vem do Secret, nunca do ConfigMap.
+            - name: PAYMENT_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef: { name: vehicle-sales-secret, key: PAYMENT_WEBHOOK_SECRET }
             - name: DATABASE_HOST
               valueFrom:
                 configMapKeyRef: { name: vehicle-sales-config, key: DATABASE_HOST }

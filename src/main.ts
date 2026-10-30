@@ -4,7 +4,9 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: o webhook verifica a assinatura HMAC sobre os bytes EXATOS recebidos,
+  // antes de qualquer parse do JSON.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -24,8 +26,9 @@ async function bootstrap() {
     )
     .setVersion('3.0.0')
     .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
-    .addTag('Veículos', 'Cadastro, edição, listagens e venda de veículos')
-    .addTag('Pagamentos', 'Webhook de notificação de pagamento')
+    .addTag('Veículos', 'Cadastro, edição, listagens e compra de veículos')
+    .addTag('Cliente', 'Área do cliente autenticado')
+    .addTag('Pagamentos', 'Webhook de notificação de pagamento (assinado com HMAC)')
     .addTag('Health', 'Probes de liveness e readiness (Kubernetes)')
     .build();
 

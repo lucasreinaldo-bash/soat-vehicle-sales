@@ -5,7 +5,7 @@ import { UpdateVehicleUseCase } from '../../../application/use-cases/vehicle/upd
 import { GetVehicleUseCase } from '../../../application/use-cases/vehicle/get-vehicle.usecase';
 import { ListAvailableVehiclesUseCase } from '../../../application/use-cases/vehicle/list-available-vehicles.usecase';
 import { ListSoldVehiclesUseCase } from '../../../application/use-cases/vehicle/list-sold-vehicles.usecase';
-import { SellVehicleUseCase } from '../../../application/use-cases/sale/sell-vehicle.usecase';
+import { PurchaseVehicleUseCase } from '../../../application/use-cases/sale/purchase-vehicle.usecase';
 import { PersistenceModule } from '../../persistence/persistence.module';
 import { PaymentGatewayModule } from '../../payment/payment-gateway.module';
 
@@ -24,7 +24,7 @@ import { PaymentGatewayModule } from '../../payment/payment-gateway.module';
     GetVehicleUseCase,
     ListAvailableVehiclesUseCase,
     ListSoldVehiclesUseCase,
-    SellVehicleUseCase,
+    PurchaseVehicleUseCase,
   ],
 })
 export class VehicleModule {}

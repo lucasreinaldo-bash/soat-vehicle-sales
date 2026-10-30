@@ -1,23 +1,21 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Sale, SaleStatus } from '../../../../domain/sale/sale.entity';
 
-export class SellVehicleResponseDto {
+export class PurchaseResponseDto {
   @ApiProperty() saleId: string;
   @ApiProperty() vehicleId: string;
-  @ApiProperty() buyerCpf: string;
   @ApiProperty() price: number;
-  @ApiProperty() saleDate: Date;
+  @ApiProperty({ description: 'Data da compra, definida pelo servidor' }) saleDate: Date;
   @ApiProperty({ enum: SaleStatus }) status: SaleStatus;
   @ApiProperty({
-    description: 'Código a ser usado pela entidade de pagamento para notificar o webhook',
+    description: 'Código que a entidade de pagamento usa para notificar o webhook',
   })
   paymentCode: string;
 
-  static fromDomain(sale: Sale): SellVehicleResponseDto {
-    const dto = new SellVehicleResponseDto();
+  static fromDomain(sale: Sale): PurchaseResponseDto {
+    const dto = new PurchaseResponseDto();
     dto.saleId = sale.id;
     dto.vehicleId = sale.vehicleId;
-    dto.buyerCpf = sale.buyerCpf;
     dto.price = Number(sale.price);
     dto.saleDate = sale.saleDate;
     dto.status = sale.status;
