@@ -1,26 +1,55 @@
-# Plataforma de Revenda de Veículos — Tech Challenge Fase 2 (SOAT PósTech)
+# Plataforma de Revenda de Veículos — Tech Challenge Fase 3 (SOAT PósTech)
 
-API REST para uma plataforma de revenda de veículos automotores: cadastro e edição de veículos,
-venda com confirmação assíncrona de pagamento via webhook, e listagens do catálogo ordenadas por
-preço. Implementada em **NestJS + TypeScript + PostgreSQL**, seguindo **Clean Architecture** e os
-princípios **SOLID**, com empacotamento em **Docker** e publicação em **Kubernetes**.
+API REST da plataforma de revenda de veículos automotores. A API cobre:
+
+- cadastro e edição de veículos;
+- **compra pela internet, restrita a clientes cadastrados**, com pagamento confirmado depois por
+  webhook assinado;
+- listagens de veículos à venda e de veículos vendidos, ordenadas por preço.
+
+Implementada em **NestJS + TypeScript + PostgreSQL**, com **Clean Architecture** e **SOLID**,
+empacotada em **Docker** e publicada em **Kubernetes**.
+
+O cadastro e a autenticação dos clientes **não** ficam nesta API. Eles vivem num serviço de
+identidade totalmente apartado (Keycloak), em outro repositório:
+**[soat-vehicle-identity](https://github.com/lucasreinaldo-bash/soat-vehicle-identity)**.
+Esta API não guarda nome, e-mail nem CPF de ninguém. Das vendas, guarda apenas o identificador
+opaco do comprador que vem no token.
+
+> A versão entregue na Fase 2 está preservada na tag
+> [`fase-2`](https://github.com/lucasreinaldo-bash/soat-vehicle-sales/releases/tag/fase-2).
 
 ---
 
 ## Sumário
 
+- [O que mudou na Fase 3](#o-que-mudou-na-fase-3)
 - [Requisitos atendidos](#requisitos-atendidos)
+- [Separação entre identidade e vendas](#separação-entre-identidade-e-vendas)
 - [Modelagem do domínio](#modelagem-do-domínio)
 - [Arquitetura](#arquitetura)
 - [Stack](#stack)
 - [Como executar localmente](#como-executar-localmente)
-- [Documentação da API (OpenAPI/Swagger)](#documentação-da-api-openapiswagger)
-- [Endpoints](#endpoints)
+- [Endpoints e autorização](#endpoints-e-autorização)
 - [Fluxo completo de ponta a ponta](#fluxo-completo-de-ponta-a-ponta)
 - [Como testar](#como-testar)
 - [Implantação em Kubernetes](#implantação-em-kubernetes)
+- [Fluxo de mudanças: Pull Requests e CI](#fluxo-de-mudanças-pull-requests-e-ci)
 - [Estrutura do repositório](#estrutura-do-repositório)
 - [Decisões de arquitetura](#decisões-de-arquitetura)
+
+---
+
+## O que mudou na Fase 3
+
+| Fase 2 | Fase 3 |
+|---|---|
+| Venda registrada pelo operador, informando o CPF do comprador (`POST /vehicles/{id}/sale`) | **Compra feita pelo próprio cliente autenticado** (`POST /vehicles/{id}/purchase`), sem corpo: o comprador vem do token |
+| CPF do comprador guardado na tabela de vendas | **Nenhum dado pessoal na base de vendas**: só o `buyer_id` (o `sub` do token). A coluna `buyer_cpf` foi removida por migration |
+| API aberta | **JWT obrigatório por padrão**; papéis `admin` (operador) e `customer` (cliente) |
+| Webhook de pagamento aberto | **Webhook assinado com HMAC-SHA256**, com proteção contra replay |
+| — | `GET /me/purchases`: o cliente consulta as próprias compras |
+| Mudanças direto na `main` | Toda mudança por **Pull Request**, com a `main` protegida e CI obrigatório |
 
 ---
 
@@ -28,66 +57,105 @@ princípios **SOLID**, com empacotamento em **Docker** e publicação em **Kuber
 
 | # | Requisito do enunciado | Onde está implementado |
 |---|---|---|
-| 1 | Cadastrar um veículo para venda (marca, modelo, ano, cor, preço) | `POST /vehicles` — [`CreateVehicleUseCase`](src/application/use-cases/vehicle/create-vehicle.usecase.ts) |
-| 2 | Editar os dados do veículo | `PUT /vehicles/{id}` — [`UpdateVehicleUseCase`](src/application/use-cases/vehicle/update-vehicle.usecase.ts) |
-| 3 | Efetuar a venda de um veículo (CPF do comprador, data da venda) | `POST /vehicles/{id}/sale` — [`SellVehicleUseCase`](src/application/use-cases/sale/sell-vehicle.usecase.ts). O CPF é obrigatório e validado; a data da venda é atribuída pelo sistema por padrão e pode ser informada para lançamento retroativo |
-| 4 | Listagem de veículos à venda, ordenada por preço (crescente) | `GET /vehicles/available` — [`ListAvailableVehiclesUseCase`](src/application/use-cases/vehicle/list-available-vehicles.usecase.ts) |
-| 5 | Listagem de veículos vendidos, ordenada por preço (crescente) | `GET /vehicles/sold` — [`ListSoldVehiclesUseCase`](src/application/use-cases/vehicle/list-sold-vehicles.usecase.ts) |
-| 6 | Webhook de pagamento (efetuado/cancelado a partir do código do pagamento) | `POST /payments/webhook` — [`ProcessPaymentWebhookUseCase`](src/application/use-cases/sale/process-payment-webhook.usecase.ts) |
-| 7 | Documentação OpenAPI/Swagger | `GET /docs` — configurado em [`main.ts`](src/main.ts) |
-| 8 | SOLID e Clean Architecture de forma prescritiva | [Arquitetura](#arquitetura) e [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
-| 9 | Manifestos Kubernetes (deployment, configmap, secrets, services) | [`k8s/`](k8s/) |
-| 10 | Dockerfile e `docker compose up` | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) |
+| 1 | Cadastrar um veículo (marca, modelo, ano, cor, preço) | `POST /vehicles`, papel `admin`: [`CreateVehicleUseCase`](src/application/use-cases/vehicle/create-vehicle.usecase.ts) |
+| 2 | Editar os dados do veículo | `PUT /vehicles/{id}`, papel `admin`: [`UpdateVehicleUseCase`](src/application/use-cases/vehicle/update-vehicle.usecase.ts) |
+| 3 | Compra pela internet **somente por pessoas cadastradas** | `POST /vehicles/{id}/purchase`, papel `customer`: [`PurchaseVehicleUseCase`](src/application/use-cases/sale/purchase-vehicle.usecase.ts). Sem token válido a API responde 401. O papel `customer` só existe para quem se cadastrou no serviço de identidade |
+| 4 | Efetivação da compra | `POST /payments/webhook`, assinado: [`ProcessPaymentWebhookUseCase`](src/application/use-cases/sale/process-payment-webhook.usecase.ts) |
+| 5 | Listagem de veículos à venda, por preço crescente | `GET /vehicles/available` (pública): [`ListAvailableVehiclesUseCase`](src/application/use-cases/vehicle/list-available-vehicles.usecase.ts) |
+| 6 | Listagem de veículos vendidos, por preço crescente | `GET /vehicles/sold` (pública): [`ListSoldVehiclesUseCase`](src/application/use-cases/vehicle/list-sold-vehicles.usecase.ts) |
+| 7 | Cadastro e autorização do comprador separados, em serviço apartado | Keycloak no repositório [soat-vehicle-identity](https://github.com/lucasreinaldo-bash/soat-vehicle-identity). Esta API só valida tokens: [`src/infrastructure/http/auth/`](src/infrastructure/http/auth/) |
+| 8 | Dados do cliente separados dos dados transacionais da venda | Bancos distintos e redes distintas. A venda guarda só o `buyer_id`; [migration que remove o CPF](prisma/migrations/20261030000000_buyer_id_sem_cpf/migration.sql) |
+| 9 | Mudanças por CI/CD e Pull Requests | [`.github/workflows/`](.github/workflows/), `main` protegida. Ver [Fluxo de mudanças](#fluxo-de-mudanças-pull-requests-e-ci) |
+| 10 | README, código funcional e Kubernetes | Este arquivo, [`k8s/`](k8s/), [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) |
+
+---
+
+## Separação entre identidade e vendas
+
+```
+                        ┌──────────────────────────────┐
+  Cliente ─cadastro───▶ │  SERVIÇO DE IDENTIDADE       │──▶ identity-db
+          ─login──────▶ │  Keycloak · realm            │    nome, e-mail, CPF, senha
+                        │  vehicle-sales               │
+                        └──────────────┬───────────────┘
+                                       │ JWT RS256: sub · papéis · aud
+                                       │ (a API busca só as chaves públicas, JWKS)
+                                       ▼
+  Cliente ─Bearer─────▶ ┌──────────────────────────────┐
+                        │  API DE VENDAS (este repo)   │──▶ banco de vendas
+                        │  valida o JWT localmente     │    veículos, vendas (buyer_id)
+                        └──────────────────────────────┘
+```
+
+A separação vale em três níveis:
+
+1. **Serviço.** Cadastro, login, senha e política de senha ficam no Keycloak, que tem repositório,
+   pipeline e ciclo de vida próprios. A API não tem nenhuma rota de cadastro nem de login.
+2. **Dados.** Os dados pessoais ficam no `identity-db`. A tabela `sales` guarda apenas `buyer_id`,
+   um identificador opaco. Sem acesso ao serviço de identidade, ele não revela quem é a pessoa.
+   O teste e2e verifica que a tabela de vendas não tem coluna de CPF.
+3. **Rede.** No Docker Compose, a API entra na rede `vehicle-identity` apenas para buscar as chaves
+   públicas. O banco de vendas fica fora dela e não alcança o banco de identidade.
+
+A API depende só de um contrato, configurado por variáveis de ambiente:
+
+| Variável | Valor no Compose | Para quê |
+|---|---|---|
+| `AUTH_ISSUER` | `http://localhost:8180/realms/vehicle-sales` | Emissor esperado no `iss` |
+| `AUTH_AUDIENCE` | `vehicle-sales-api` | Audiência exigida no `aud` |
+| `AUTH_JWKS_URI` | `http://keycloak:8080/realms/vehicle-sales/protocol/openid-connect/certs` | Chaves públicas para verificar a assinatura |
+
+Trocar o Keycloak por Cognito ou Auth0 é trocar esses três valores, desde que o provedor publique
+os papéis no mesmo formato. Nenhuma linha de regra de negócio muda.
 
 ---
 
 ## Modelagem do domínio
 
 O enunciado avisa que *"nem todos os campos e funcionalidades necessárias estão descritos"*. A
-lacuna central é: **"efetuar a venda" e "webhook de pagamento" são o mesmo processo de negócio,
-separados no tempo.** Uma venda não pode ser considerada concluída no instante em que é registrada
-— ela só se confirma quando a entidade de pagamento avisa que o dinheiro entrou. Foi essa leitura
-que guiou toda a modelagem.
+lacuna central é que **a compra e a efetivação da compra são o mesmo processo de negócio,
+separados no tempo**. A compra só se confirma quando a entidade de pagamento avisa que o dinheiro
+entrou.
 
 ### Entidades
 
-**`Vehicle`** — o veículo do estoque.
+**`Vehicle`**: o veículo do estoque.
 
 | Campo | Origem | Observação |
 |---|---|---|
 | `id`, `createdAt`, `updatedAt` | inferido | Identidade e auditoria |
 | `brand`, `model`, `year`, `color`, `price` | enunciado | Dados do cadastro |
-| `status` | **inferido** | `AVAILABLE` \| `RESERVED` \| `SOLD` — é o que permite separar as duas listagens exigidas |
+| `status` | **inferido** | `AVAILABLE` \| `RESERVED` \| `SOLD`. É o que separa as duas listagens exigidas |
 
-**`Sale`** — o registro de venda de um veículo.
+**`Sale`**: a compra de um veículo.
 
 | Campo | Origem | Observação |
 |---|---|---|
 | `id`, `createdAt`, `updatedAt` | inferido | Identidade e auditoria |
-| `buyerCpf` | enunciado | CPF de quem comprou, validado por Value Object |
-| `saleDate` | enunciado | Data da venda: o instante do registro por padrão, ou uma data anterior informada explicitamente |
-| `price` | **inferido** | Preço congelado no momento da venda (o preço de tabela pode mudar depois) |
-| `vehicleId` | **inferido** | Qual veículo foi vendido |
-| `paymentCode` | **inferido** | **Chave da integração**: é o "código do pagamento" que o webhook usa para localizar a venda |
+| `buyerId` | **inferido** | Identificador opaco do comprador (o `sub` do token). **Não é CPF nem dado pessoal** |
+| `saleDate` | enunciado | Instante da compra, atribuído pelo servidor |
+| `price` | **inferido** | Preço congelado no momento da compra |
+| `vehicleId` | **inferido** | Qual veículo foi comprado |
+| `paymentCode` | **inferido** | **Chave da integração**: o código que o webhook usa para localizar a compra |
 | `status` | **inferido** | `PENDING_PAYMENT` \| `PAID` \| `CANCELLED` |
 
 ### Máquina de estados
 
 ```mermaid
 stateDiagram-v2
-    [*] --> AVAILABLE: POST /vehicles (cadastro)
-    AVAILABLE --> RESERVED: POST /vehicles/{id}/sale<br/>(cria Sale PENDING_PAYMENT<br/>e gera paymentCode)
-    RESERVED --> SOLD: POST /payments/webhook<br/>status = PAID
-    RESERVED --> AVAILABLE: POST /payments/webhook<br/>status = CANCELLED
+    [*] --> AVAILABLE: POST /vehicles (admin)
+    AVAILABLE --> RESERVED: POST /vehicles/{id}/purchase (customer)<br/>cria Sale PENDING_PAYMENT<br/>e gera paymentCode
+    RESERVED --> SOLD: webhook assinado<br/>status = PAID
+    RESERVED --> AVAILABLE: webhook assinado<br/>status = CANCELLED
     SOLD --> [*]
 
     note right of AVAILABLE
         Aparece em GET /vehicles/available
     end note
     note right of RESERVED
-        Não aparece em nenhuma das
-        duas listagens: já não está
-        à venda, e ainda não foi vendido
+        Não aparece em nenhuma listagem:
+        já não está à venda, e ainda
+        não foi vendido
     end note
     note right of SOLD
         Aparece em GET /vehicles/sold
@@ -97,58 +165,64 @@ stateDiagram-v2
 
 ### Regras de negócio implementadas
 
-1. Um veículo só pode ser vendido se estiver `AVAILABLE` — venda concorrente do mesmo veículo
+1. **Só cliente cadastrado compra.** Sem token, ou com token inválido, a resposta é **401**. Um
+   token sem o papel `customer` recebe **403**, e isso inclui o operador.
+2. **O comprador vem do token, nunca do corpo.** A rota de compra não aceita corpo. Ninguém
+   compra em nome de outra pessoa.
+3. Um veículo só pode ser comprado se estiver `AVAILABLE`. Compra concorrente do mesmo veículo
    retorna **409 Conflict**.
-2. O CPF do comprador é validado (formato + dígitos verificadores) antes de qualquer escrita;
-   CPF inválido retorna **400** e **não cria venda nem reserva o veículo**.
-3. A `saleDate` é atribuída pelo servidor por padrão (a venda é um fato observado pelo sistema).
-   Pode ser informada no corpo da requisição para lançar uma venda ocorrida em data anterior — por
-   exemplo, negociação fechada na loja física e digitada depois. **Datas futuras são rejeitadas**
-   (400), o que impede adulteração para frente no tempo.
-4. O webhook é **idempotente por rejeição**: uma venda que já saiu de `PENDING_PAYMENT` recusa nova
-   notificação com **409**, protegendo contra reentrega do processador de pagamento.
-5. Pagamento cancelado **devolve o veículo ao catálogo** — ele volta a `AVAILABLE` e pode ser
-   vendido de novo.
-6. Veículo já vendido **não pode ser editado** (**409**) — preserva a integridade do histórico.
-7. Validações de cadastro: preço maior que zero, ano entre 1900 e o ano seguinte ao corrente,
-   marca/modelo/cor não vazios.
+4. A `saleDate` é atribuída pelo servidor: a compra é um fato observado pelo sistema.
+5. O webhook só é aceito com **assinatura HMAC válida e recente** (até 5 minutos). Sem assinatura,
+   com assinatura errada, com corpo adulterado ou fora da janela, a resposta é **401** e nada muda.
+6. O webhook é **idempotente por rejeição**. Uma compra que já saiu de `PENDING_PAYMENT` recusa nova
+   notificação com **409**.
+7. Pagamento cancelado **devolve o veículo ao catálogo** (`AVAILABLE`).
+8. Veículo vendido **não pode ser editado** (**409**).
+9. Cada cliente vê **apenas as próprias compras** em `GET /me/purchases`.
+10. Validações de cadastro: preço maior que zero, ano entre 1900 e o ano seguinte ao corrente,
+    marca, modelo e cor não vazios.
 
 ---
 
 ## Arquitetura
 
-Clean Architecture com três camadas concêntricas. **A regra da dependência é absoluta: todas as
-setas apontam para dentro.** O domínio não conhece ninguém; a aplicação conhece só o domínio; a
-infraestrutura conhece as duas, e ninguém conhece a infraestrutura.
+Clean Architecture com três camadas concêntricas. **Todas as setas de dependência apontam para
+dentro.** O domínio não conhece ninguém; a aplicação conhece só o domínio; a infraestrutura conhece
+as duas.
+
+A autenticação é um detalhe de borda. Os guards HTTP validam o token e entregam ao caso de uso
+apenas um `buyerId`. O domínio e a aplicação não sabem o que é JWT nem Keycloak.
 
 ```mermaid
 flowchart TB
     subgraph INFRA["🔌 Infrastructure — detalhes substituíveis"]
         direction LR
         HTTP["HTTP<br/>Controllers, DTOs,<br/>ExceptionFilter, Swagger"]
-        DB["Persistence<br/>Prisma + Repositories"]
+        AUTH["Auth (borda)<br/>JwtAuthGuard, RolesGuard,<br/>JwtTokenVerifier (JWKS)"]
+        HOOK["Webhook<br/>WebhookSignatureGuard (HMAC)"]
+        DB["Persistence<br/>Prisma + Repositories<br/>+ Unit of Work"]
         PAY["Payment<br/>MockPaymentGatewayAdapter"]
     end
 
     subgraph APP["⚙️ Application — casos de uso"]
         direction LR
-        UC["Use Cases<br/>CreateVehicle, UpdateVehicle,<br/>ListAvailable, ListSold,<br/>SellVehicle, ProcessPaymentWebhook"]
+        UC["Use Cases<br/>CreateVehicle, UpdateVehicle, GetVehicle,<br/>ListAvailable, ListSold,<br/>PurchaseVehicle, ListMyPurchases,<br/>ProcessPaymentWebhook"]
         PORTS["Ports (interfaces)<br/>IVehicleRepository<br/>ISaleRepository<br/>IPaymentGateway<br/>IUnitOfWork"]
     end
 
     subgraph DOMAIN["💛 Domain — regras de negócio"]
         direction LR
         ENT["Entities<br/>Vehicle, Sale"]
-        VO["Value Objects<br/>Cpf"]
         ERR["Domain Errors"]
     end
 
+    AUTH --> HTTP
+    HOOK --> HTTP
     HTTP --> UC
     DB -.implementa.-> PORTS
     PAY -.implementa.-> PORTS
     UC --> PORTS
     UC --> ENT
-    ENT --> VO
     ENT --> ERR
 ```
 
@@ -156,13 +230,13 @@ flowchart TB
 
 | Princípio | Aplicação concreta |
 |---|---|
-| **S**ingle Responsibility | Um caso de uso por arquivo, com um único método `execute()`. `SellVehicleUseCase` só vende; `ProcessPaymentWebhookUseCase` só reage ao pagamento. Controllers apenas traduzem HTTP ↔ caso de uso. |
-| **O**pen/Closed | Um novo meio de pagamento é um novo adapter de `IPaymentGateway`; um novo banco é um novo repositório. Nenhuma regra de negócio existente é alterada. |
-| **L**iskov Substitution | `InMemoryVehicleRepository` (testes) e `PrismaVehicleRepository` (produção) são intercambiáveis sob o mesmo contrato — os testes de caso de uso provam isso na prática. |
-| **I**nterface Segregation | Portas pequenas e específicas: `IPaymentGateway` expõe só `requestPayment`; os repositórios expõem só os métodos que os casos de uso realmente consomem. |
-| **D**ependency Inversion | Casos de uso dependem de **interfaces** (`src/application/ports/`), nunca de Prisma ou HTTP. A ligação com as implementações concretas acontece só nos módulos de composição ([`persistence.module.ts`](src/infrastructure/persistence/persistence.module.ts), [`payment-gateway.module.ts`](src/infrastructure/payment/payment-gateway.module.ts)). |
+| **S**ingle Responsibility | Um caso de uso por arquivo, com um único `execute()`. `PurchaseVehicleUseCase` só compra; `ProcessPaymentWebhookUseCase` só reage ao pagamento. Autenticar (`JwtAuthGuard`), autorizar (`RolesGuard`) e verificar a assinatura do webhook (`WebhookSignatureGuard`) são classes separadas. |
+| **O**pen/Closed | Trocar de provedor de identidade é configuração. Um novo meio de pagamento é um novo adapter de `IPaymentGateway`. Nenhuma regra de negócio existente muda. |
+| **L**iskov Substitution | `InMemorySaleRepository` (testes) e `PrismaSaleRepository` (produção) são intercambiáveis sob o mesmo contrato. O verificador de token aceita qualquer fonte de chaves: remota (JWKS do Keycloak) em produção, local nos testes. |
+| **I**nterface Segregation | Portas pequenas: `IPaymentGateway` expõe só `requestPayment`. O caso de uso recebe `buyerId: string`, não o token inteiro. |
+| **D**ependency Inversion | Casos de uso dependem de interfaces (`src/application/ports/`). A ligação com Prisma, gateway e Keycloak acontece só nos módulos de composição. |
 
-Detalhamento completo, com os trade-offs de cada decisão, em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Detalhamento, com os trade-offs de cada decisão, em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -171,55 +245,66 @@ Detalhamento completo, com os trade-offs de cada decisão, em [`docs/ARCHITECTUR
 | Camada | Tecnologia |
 |---|---|
 | Runtime | Node.js 22 |
-| Framework | NestJS 11 (injeção de dependência, módulos, pipes, filters) |
+| Framework | NestJS 11 (injeção de dependência, guards, pipes, filters) |
 | Linguagem | TypeScript 5.7 (modo estrito) |
 | Banco de dados | PostgreSQL 16 |
 | ORM | Prisma 5 |
-| Documentação | OpenAPI 3 / Swagger UI (`@nestjs/swagger`) |
-| Validação | `class-validator` + `ValidationPipe` global |
+| Identidade | Keycloak 26 (OIDC), em [repositório próprio](https://github.com/lucasreinaldo-bash/soat-vehicle-identity) |
+| Validação de token | `jose` (JWT RS256, JWKS remoto com cache) |
+| Documentação | OpenAPI 3 / Swagger UI, com botão **Authorize** para o token |
 | Testes | Jest (unitários) + Supertest (e2e) |
 | Container | Docker (multi-stage) + Docker Compose |
 | Orquestração | Kubernetes (Deployment, Service, ConfigMap, Secret, PVC, HPA) |
+| CI/CD | GitHub Actions |
 
 ---
 
 ## Como executar localmente
 
-### Opção 1 — Docker Compose (recomendado)
+Pré-requisitos: Docker com o plugin Compose, `curl`, `jq` e `openssl`.
 
-Pré-requisito: Docker com o plugin Compose.
+### 1. Suba o serviço de identidade
 
-A API valida tokens emitidos pelo **serviço de identidade**, que é apartado e vive em outro
-repositório: [soat-vehicle-identity](https://github.com/lucasreinaldo-bash/soat-vehicle-identity).
-Suba-o primeiro, a partir da pasta dele:
+Ele vive em outro repositório:
 
 ```bash
-docker compose up -d
+git clone https://github.com/lucasreinaldo-bash/soat-vehicle-identity.git
+cd soat-vehicle-identity
+docker compose up -d --wait
 ```
 
-Depois, nesta pasta:
+O Keycloak fica em <http://localhost:8180> e cria a rede Docker `vehicle-identity`.
+
+### 2. Suba a API
+
+Nesta pasta:
 
 ```bash
-docker compose up
+docker compose up -d --wait
 ```
 
-A API se conecta à rede `vehicle-identity` apenas para buscar as chaves públicas e validar os
-tokens. O banco de vendas fica numa rede própria e não alcança o banco de identidade.
+O comando sobe o PostgreSQL de vendas e a API. A API espera o banco ficar saudável, aplica as
+migrations e sobe na porta 3000.
 
-Isso sobe **toda a solução** com um único comando: o PostgreSQL, e a API (que espera o banco ficar
-saudável, aplica as migrations automaticamente e sobe na porta 3000).
+| O quê | Endereço |
+|---|---|
+| API | <http://localhost:3000> |
+| Swagger | <http://localhost:3000/docs> |
+| Especificação OpenAPI (JSON) | <http://localhost:3000/docs-json> |
+| Health | <http://localhost:3000/health> |
 
-- API: <http://localhost:3000>
-- Swagger: <http://localhost:3000/docs>
-- Health: <http://localhost:3000/health>
+Se o serviço de identidade for recriado (`docker compose down` na pasta dele), a rede
+`vehicle-identity` ganha outro id. Nesse caso recrie o container da API:
 
-Para popular o catálogo com veículos de exemplo (executado a partir do host, com as dependências de
-desenvolvimento instaladas):
+```bash
+docker compose up -d --force-recreate --wait api
+```
+
+Para popular o catálogo com veículos de exemplo:
 
 ```bash
 npm install
-DATABASE_URL="postgresql://vehicles:vehicles@localhost:5432/vehicle_sales?schema=public" \
-  npm run prisma:seed
+DATABASE_URL="postgresql://vehicles:vehicles@localhost:5432/vehicle_sales?schema=public" npm run prisma:seed
 ```
 
 Para derrubar tudo (`-v` também remove o volume do banco):
@@ -228,46 +313,66 @@ Para derrubar tudo (`-v` também remove o volume do banco):
 docker compose down -v
 ```
 
-### Opção 2 — Node local com banco em container
+### Alternativa: Node local com banco em container
 
 ```bash
 cp .env.example .env
 npm install
-docker compose up -d db          # sobe só o PostgreSQL
-npx prisma migrate deploy        # aplica as migrations
-npm run start:dev                # API em modo watch
+docker compose up -d db
+npx prisma migrate deploy
+npm run start:dev
 ```
 
----
-
-## Documentação da API (OpenAPI/Swagger)
-
-Com a aplicação no ar, a documentação interativa fica em **<http://localhost:3000/docs>**, e a
-especificação OpenAPI em formato JSON em **<http://localhost:3000/docs-json>** — é esse arquivo que
-o time de frontend pode importar no Insomnia/Postman ou usar para gerar um client tipado.
-
-Todos os endpoints documentam parâmetros, corpo da requisição, exemplos e **todos os códigos de
-resposta possíveis** (200/201, 400, 404, 409).
+O `.env.example` aponta `AUTH_JWKS_URI` para `localhost:8180`, o Keycloak publicado no host.
 
 ---
 
-## Endpoints
+## Endpoints e autorização
 
-| Método | Rota | Descrição |
-|---|---|---|
-| `POST` | `/vehicles` | Cadastra um veículo para venda |
-| `GET` | `/vehicles/available` | Lista veículos à venda, do mais barato ao mais caro |
-| `GET` | `/vehicles/sold` | Lista veículos vendidos, do mais barato ao mais caro |
-| `GET` | `/vehicles/{id}` | Consulta um veículo (usado pelo frontend para carregar a tela de edição) |
-| `PUT` | `/vehicles/{id}` | Edita os dados de um veículo |
-| `POST` | `/vehicles/{id}/sale` | Efetua a venda: registra o CPF do comprador e a data, e gera o código de pagamento |
-| `POST` | `/payments/webhook` | Webhook do processador de pagamento (pagamento efetuado ou cancelado) |
-| `GET` | `/health` | Liveness probe |
-| `GET` | `/health/ready` | Readiness probe (valida conexão com o banco) |
+A API é **fechada por padrão**: toda rota exige um token válido, exceto as marcadas como públicas.
+
+| Método | Rota | Acesso | Descrição |
+|---|---|---|---|
+| `GET` | `/vehicles/available` | público | Veículos à venda, do mais barato ao mais caro |
+| `GET` | `/vehicles/sold` | público | Veículos vendidos, do mais barato ao mais caro |
+| `GET` | `/vehicles/{id}` | público | Consulta um veículo |
+| `POST` | `/vehicles` | `admin` | Cadastra um veículo |
+| `PUT` | `/vehicles/{id}` | `admin` | Edita os dados de um veículo |
+| `POST` | `/vehicles/{id}/purchase` | `customer` | Compra o veículo; devolve o `paymentCode` |
+| `GET` | `/me/purchases` | `customer` | Compras do cliente autenticado, com o status do pagamento |
+| `POST` | `/payments/webhook` | assinatura HMAC | Notificação do processador de pagamento (`PAID` ou `CANCELLED`) |
+| `GET` | `/health`, `/health/ready` | público | Liveness e readiness |
+
+No Swagger, use o botão **Authorize** e cole o token obtido no serviço de identidade.
+
+### Respostas de segurança
+
+| Situação | Status |
+|---|---|
+| Sem token, token expirado, assinatura inválida, emissor ou audiência errados | **401** |
+| Token válido, mas sem o papel exigido | **403** |
+| Serviço de identidade fora do ar (JWKS inacessível) | **503**. A API não confunde indisponibilidade com token inválido |
+| Webhook sem assinatura, com assinatura errada ou com mais de 5 minutos | **401** |
+
+### O webhook assinado
+
+O processador de pagamento assina cada notificação com um segredo compartilhado
+(`PAYMENT_WEBHOOK_SECRET`):
+
+```
+X-Webhook-Timestamp: <segundos desde a época Unix>
+X-Webhook-Signature: sha256=<HMAC-SHA256(segredo, "<timestamp>.<corpo bruto>")>
+```
+
+A API recalcula o HMAC sobre os **bytes exatos** recebidos e compara em tempo constante
+(`timingSafeEqual`). Como o timestamp entra na assinatura, uma notificação capturada não pode ser
+reenviada depois da janela de 5 minutos. O script
+[`scripts/simular-pagamento.sh`](scripts/simular-pagamento.sh) faz o papel do processador na
+demonstração.
 
 ### Padrão de erro
 
-Todas as falhas retornam o mesmo envelope, produzido pelo
+Todas as falhas, inclusive as de autenticação, usam o mesmo envelope, produzido pelo
 [`DomainExceptionFilter`](src/infrastructure/http/filters/domain-exception.filter.ts):
 
 ```json
@@ -275,7 +380,7 @@ Todas as falhas retornam o mesmo envelope, produzido pelo
   "statusCode": 409,
   "error": "VehicleNotAvailableError",
   "message": "Veículo abc-123 não está disponível para venda",
-  "timestamp": "2026-09-10T18:32:00.000Z"
+  "timestamp": "2026-10-30T18:32:00.000Z"
 }
 ```
 
@@ -283,25 +388,30 @@ Todas as falhas retornam o mesmo envelope, produzido pelo
 
 ## Fluxo completo de ponta a ponta
 
-Sequência de uma venda bem-sucedida:
-
 ```mermaid
 sequenceDiagram
-    participant F as Frontend
-    participant API as API
+    actor C as Cliente
+    participant KC as Keycloak<br/>(identidade)
+    participant API as API de vendas
     participant PG as Processador<br/>de pagamento
-    participant DB as PostgreSQL
+    participant DB as Banco de vendas
 
-    F->>API: POST /vehicles/{id}/sale { buyerCpf }
-    API->>API: valida CPF e disponibilidade
+    C->>KC: cadastro (nome, e-mail, CPF, senha)
+    KC-->>C: conta criada com o papel customer
+    C->>KC: login
+    KC-->>C: JWT (sub, papéis, aud)
+
+    C->>API: POST /vehicles/{id}/purchase<br/>Authorization: Bearer
+    API->>API: valida o JWT pelo JWKS e exige customer
     API->>PG: solicita cobrança
     PG-->>API: paymentCode
-    API->>DB: Sale(PENDING_PAYMENT) + Vehicle(RESERVED)
-    API-->>F: 201 { saleId, paymentCode, saleDate }
+    API->>DB: Sale(PENDING_PAYMENT, buyer_id = sub)<br/>Vehicle(RESERVED)
+    API-->>C: 201 { saleId, paymentCode, status }
 
-    Note over PG: cliente paga (ou desiste)
+    Note over PG: o cliente paga (ou desiste)
 
-    PG->>API: POST /payments/webhook { paymentCode, status }
+    PG->>API: POST /payments/webhook<br/>X-Webhook-Signature (HMAC)
+    API->>API: verifica assinatura e janela de tempo
     alt status = PAID
         API->>DB: Sale(PAID) + Vehicle(SOLD)
     else status = CANCELLED
@@ -310,49 +420,90 @@ sequenceDiagram
     API-->>PG: 200 OK
 ```
 
-Reproduzindo via `curl`:
+### Reproduzindo no terminal
+
+Com as duas stacks no ar:
+
+**1. Cadastre um cliente.** Abra <http://localhost:8180/realms/vehicle-sales/account>, clique em
+**Cadastre-se** e preencha nome, e-mail, CPF e senha. Os passos abaixo usam
+`cliente@exemplo.com` / `cliente12345`.
+
+**2. Obtenha os tokens** do operador e do cliente:
 
 ```bash
-# 1. Cadastrar um veículo
-VEHICLE_ID=$(curl -s -X POST http://localhost:3000/vehicles \
-  -H 'Content-Type: application/json' \
-  -d '{"brand":"Volkswagen","model":"Gol","year":2022,"color":"Prata","price":79990}' \
-  | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-
-# 2. Conferir que ele aparece na lista de veículos à venda
-curl -s http://localhost:3000/vehicles/available
-
-# 3. Efetuar a venda (guardando o código do pagamento)
-PAYMENT_CODE=$(curl -s -X POST http://localhost:3000/vehicles/$VEHICLE_ID/sale \
-  -H 'Content-Type: application/json' \
-  -d '{"buyerCpf":"529.982.247-25"}' \
-  | sed -n 's/.*"paymentCode":"\([^"]*\)".*/\1/p')
-
-# 4. O processador de pagamento confirma o pagamento pelo webhook
-curl -s -X POST http://localhost:3000/payments/webhook \
-  -H 'Content-Type: application/json' \
-  -d "{\"paymentCode\":\"$PAYMENT_CODE\",\"status\":\"PAID\"}"
-
-# 5. O veículo agora está na lista de vendidos
-curl -s http://localhost:3000/vehicles/sold
+KC=http://localhost:8180/realms/vehicle-sales/protocol/openid-connect/token
+ADMIN=$(curl -s $KC -d grant_type=password -d client_id=vehicle-sales-cli -d username=admin@revenda.com -d password=admin12345 | jq -r .access_token)
+CLIENTE=$(curl -s $KC -d grant_type=password -d client_id=vehicle-sales-cli -d username=cliente@exemplo.com -d password=cliente12345 | jq -r .access_token)
 ```
 
-Trocando `PAID` por `CANCELLED` no passo 4, o veículo reaparece em `/vehicles/available`.
+**3. O operador cadastra um veículo:**
+
+```bash
+VEHICLE_ID=$(curl -s -X POST http://localhost:3000/vehicles -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"brand":"Volkswagen","model":"Gol","year":2022,"color":"Prata","price":79990}' | jq -r .id)
+curl -s http://localhost:3000/vehicles/available | jq
+```
+
+**4. O cliente compra:**
+
+```bash
+PAYMENT_CODE=$(curl -s -X POST http://localhost:3000/vehicles/$VEHICLE_ID/purchase -H "Authorization: Bearer $CLIENTE" | jq -r .paymentCode)
+curl -s http://localhost:3000/me/purchases -H "Authorization: Bearer $CLIENTE" | jq
+```
+
+A compra aparece como `PENDING_PAYMENT`, e o veículo sai da lista de disponíveis.
+
+**5. O processador de pagamento efetiva a compra:**
+
+```bash
+./scripts/simular-pagamento.sh $PAYMENT_CODE PAID
+curl -s http://localhost:3000/vehicles/sold | jq
+curl -s http://localhost:3000/me/purchases -H "Authorization: Bearer $CLIENTE" | jq
+```
+
+O veículo passa a constar em `/vehicles/sold`, e a compra do cliente aparece como `PAID`.
+
+**Conferindo as proteções:**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:3000/vehicles/$VEHICLE_ID/purchase
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:3000/vehicles/$VEHICLE_ID/purchase -H "Authorization: Bearer $ADMIN"
+PAYMENT_WEBHOOK_SECRET=segredo-errado-qualquer ./scripts/simular-pagamento.sh $PAYMENT_CODE PAID
+```
+
+A compra sem token responde 401, a compra pelo operador responde 403 e o webhook com o segredo
+errado responde 401.
+
+**Conferindo o que a base de vendas guarda sobre o comprador:**
+
+```bash
+docker compose exec db psql -U vehicles -d vehicle_sales -c "select buyer_id, status from sales"
+```
+
+Aparece só o `buyer_id`, igual ao `sub` do token, e nenhum dado pessoal.
+
+A coleção [`docs/api-requests.http`](docs/api-requests.http) traz o mesmo fluxo para a extensão
+REST Client do VS Code.
 
 ---
 
 ## Como testar
 
-### Testes unitários (não exigem banco)
+### Testes unitários (não exigem banco nem Keycloak)
 
 ```bash
-npm test           # executa a suíte
-npm run test:cov   # com relatório de cobertura
+npm test
+npm run test:cov
 ```
 
-Cobrem as entidades de domínio, o Value Object `Cpf` e todos os casos de uso, usando repositórios
-fake em memória ([`in-memory-repositories.ts`](src/application/use-cases/__mocks__/in-memory-repositories.ts))
-— a prova prática de que a camada de aplicação não depende de banco, de rede nem do framework.
+São **72 testes**. Eles cobrem:
+
+- as entidades;
+- todos os casos de uso, com repositórios em memória
+  ([`in-memory-repositories.ts`](src/application/use-cases/__mocks__/in-memory-repositories.ts));
+- a verificação de tokens: assinatura, emissor, audiência, expiração, algoritmo e indisponibilidade
+  do JWKS;
+- os guards de autenticação e de papel;
+- a assinatura do webhook: ausente, inválida, adulterada e expirada.
 
 ### Testes end-to-end (exigem PostgreSQL)
 
@@ -363,8 +514,21 @@ npx prisma migrate deploy
 npm run test:e2e
 ```
 
-Exercitam a API real de ponta a ponta (HTTP → controller → caso de uso → Prisma → PostgreSQL),
-incluindo o fluxo completo de venda com confirmação e com cancelamento de pagamento.
+São **31 testes** sobre a API real: HTTP, guards, controller, caso de uso, Prisma e PostgreSQL. O
+teste sobe um emissor JWT local que publica um JWKS por HTTP. A API o valida exatamente como valida
+o Keycloak, sem depender dele.
+
+Os cenários incluem:
+
+- compra sem token (401) e compra pelo operador (403);
+- token adulterado;
+- dois clientes disputando o mesmo veículo (409);
+- webhook sem assinatura, com outro segredo, com corpo adulterado e fora da janela de tempo;
+- isolamento das compras entre clientes;
+- a verificação de que a tabela de vendas não tem coluna de CPF.
+
+O repositório de identidade tem testes de fumaça próprios contra o Keycloak real, que rodam no CI
+dele. Entre outras coisas, eles verificam que o CPF não aparece no token.
 
 ---
 
@@ -374,66 +538,74 @@ Os manifestos estão em [`k8s/`](k8s/), numerados na ordem de aplicação:
 
 | Arquivo | Recursos | Papel |
 |---|---|---|
-| `00-namespace.yaml` | Namespace | Isolamento lógico da solução |
-| `01-configmap.yaml` | ConfigMap | Configuração não sensível (host/porta/base/usuário, `NODE_ENV`, `PORT`) |
-| `02-secret.yaml` | Secret | Senha do banco |
-| `03-postgres.yaml` | PVC + Deployment + Service | Banco com volume persistente, exposto apenas internamente (ClusterIP) |
+| `00-namespace.yaml` | Namespace `vehicle-sales` | Isolamento lógico da solução |
+| `01-configmap.yaml` | ConfigMap | Configuração não sensível, incluindo `AUTH_ISSUER`, `AUTH_AUDIENCE` e `AUTH_JWKS_URI` |
+| `02-secret.yaml` | Secret | Senha do banco e `PAYMENT_WEBHOOK_SECRET` |
+| `03-postgres.yaml` | PVC + Deployment + Service | Banco com volume persistente, só interno (ClusterIP) |
 | `04-api.yaml` | Deployment + Service | API com 2 réplicas, probes, limites de recursos e NodePort |
-| `05-hpa.yaml` | HorizontalPodAutoscaler | Escala de 2 a 10 réplicas por CPU/memória |
+| `05-hpa.yaml` | HorizontalPodAutoscaler | Escala de 2 a 10 réplicas por CPU e memória |
+
+No cluster, a API busca as chaves públicas no Service do Keycloak, em outro namespace
+(`keycloak.vehicle-identity.svc.cluster.local:8080`). O serviço de identidade é implantado pelo
+repositório dele.
 
 ### Subindo com minikube
 
 ```bash
 minikube start
-minikube addons enable metrics-server   # necessário para o HPA
-
-./k8s/deploy.sh                         # build da imagem + apply + espera o rollout
+minikube addons enable metrics-server
+./k8s/deploy.sh
 ```
 
-Ou manualmente:
-
-```bash
-eval $(minikube docker-env)             # builda direto no daemon do cluster
-docker build -t vehicle-sales-api:latest .
-kubectl apply -f k8s/
-kubectl -n vehicle-sales rollout status deployment/vehicle-sales-api
-```
-
-Acessando a API:
+O script faz o build da imagem dentro do cluster, aplica os manifestos e espera o rollout. Para
+acessar a API:
 
 ```bash
 kubectl -n vehicle-sales port-forward svc/vehicle-sales-api-service 3000:80
-# Swagger em http://localhost:3000/docs
 ```
 
-Verificando o estado da solução:
+Para inspecionar:
 
 ```bash
 kubectl -n vehicle-sales get all
-kubectl -n vehicle-sales get configmap,secret
 kubectl -n vehicle-sales logs -l app=vehicle-sales-api --tail=50
 kubectl -n vehicle-sales get hpa
 ```
 
-Para remover tudo: `./k8s/cleanup.sh`.
-
-A solução foi verificada em um cluster minikube real: rollout de todas as réplicas, migrations
-aplicadas pelo initContainer, fluxo de negócio completo através do Service, persistência dos dados
-após a destruição do pod do PostgreSQL, HPA coletando métricas de CPU e memória, e **445 requisições
-sem nenhuma falha durante um rolling update completo**. As evidências e o método de medição estão em
-[`k8s/README.md`](k8s/README.md#validação-executada-no-cluster).
+Para remover tudo: `./k8s/cleanup.sh`. As evidências de validação no cluster estão em
+[`k8s/README.md`](k8s/README.md).
 
 ### Decisões relevantes dos manifestos
 
-- **Migrations em `initContainer`**: rodam uma vez por rollout, antes de qualquer réplica subir, em
-  vez de em cada réplica — elimina a disputa pelo schema na inicialização. Um segundo initContainer
-  (`wait-for-db`) garante que o banco já aceita conexões.
-- **Separação ConfigMap × Secret**: nenhum dado sensível no ConfigMap; a `DATABASE_URL` é montada em
-  runtime a partir da composição das duas fontes.
-- **Probes distintas**: `/health` (liveness) não toca no banco — reiniciar o pod não resolveria uma
-  queda do PostgreSQL; `/health/ready` (readiness) valida a conexão e tira o pod do balanceamento
-  enquanto o banco estiver indisponível.
-- **Banco como ClusterIP**: o PostgreSQL nunca é exposto para fora do cluster.
+- **Migrations em `initContainer`.** Rodam uma vez por rollout, antes de qualquer réplica subir.
+  Um segundo initContainer (`wait-for-db`) garante que o banco já aceita conexões.
+- **ConfigMap × Secret.** O segredo do webhook e a senha do banco ficam no Secret. A configuração
+  de autenticação é pública por natureza (emissor e endereço das chaves públicas) e fica no
+  ConfigMap.
+- **Probes distintas.** `/health` (liveness) não toca no banco; `/health/ready` (readiness) valida a
+  conexão e tira o pod do balanceamento enquanto o banco estiver indisponível.
+- **Banco como ClusterIP.** O PostgreSQL nunca é exposto para fora do cluster.
+
+---
+
+## Fluxo de mudanças: Pull Requests e CI
+
+Toda mudança entra por **Pull Request**. A branch `main` é protegida, inclusive para
+administradores:
+
+- não aceita push direto;
+- exige histórico linear e merge por squash;
+- só aceita merge com o CI verde.
+
+O CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) roda a cada Pull Request:
+
+| Job | O que garante |
+|---|---|
+| Lint, build e testes unitários | O código compila, segue o padrão e as regras estão cobertas |
+| Testes end-to-end | A API funciona contra um PostgreSQL real, com tokens e webhooks assinados |
+| Build da imagem Docker | A imagem que vai para o cluster continua construível |
+
+O histórico de PRs deste repositório mostra a evolução da Fase 3, um passo por PR.
 
 ---
 
@@ -445,44 +617,50 @@ sem nenhuma falha durante um rolling update completo**. As evidências e o méto
 │   ├── domain/                        # 💛 Regras de negócio puras (sem framework, sem I/O)
 │   │   ├── vehicle/                   #    Entidade Vehicle + erros
 │   │   ├── sale/                      #    Entidade Sale + erros
-│   │   ├── shared/value-objects/      #    Value Object Cpf
 │   │   └── common/errors.ts           #    Hierarquia de erros de domínio
 │   ├── application/                   # ⚙️ Casos de uso e contratos
 │   │   ├── ports/                     #    Interfaces (repositórios, gateway, unit of work)
 │   │   └── use-cases/                 #    Um caso de uso por arquivo
 │   └── infrastructure/                # 🔌 Detalhes substituíveis
-│       ├── http/                      #    Controllers, DTOs, filtro de exceções, Swagger
+│       ├── http/
+│       │   ├── auth/                  #    Validação de JWT, guards, decorators
+│       │   ├── payment/               #    Webhook e verificação HMAC
+│       │   ├── me/                    #    Área do cliente (/me/purchases)
+│       │   └── vehicle/               #    Catálogo e compra
 │       ├── persistence/               #    Prisma, repositórios e Unit of Work
 │       └── payment/                   #    Adapter do gateway de pagamento
 ├── prisma/                            # Schema, migrations e seed
 ├── k8s/                               # Manifestos Kubernetes
+├── scripts/simular-pagamento.sh       # Simula o processador de pagamento (webhook assinado)
 ├── test/e2e/                          # Testes end-to-end
-├── docs/ARCHITECTURE.md               # Documento de arquitetura detalhado
-├── Dockerfile                         # Build multi-stage da aplicação
-└── docker-compose.yml                 # Stack local completa
+├── docs/                              # Arquitetura e coleção de requisições
+├── .github/workflows/                 # CI
+├── Dockerfile                         # Build multi-stage
+└── docker-compose.yml                 # Stack local da API
 ```
 
 ---
 
 ## Decisões de arquitetura
 
-Resumo das escolhas não óbvias (o racional completo está em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)):
+Resumo das escolhas não óbvias. O racional completo está em
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-1. **Estado `RESERVED` intermediário.** Sem ele, seria impossível responder corretamente às duas
-   listagens durante o intervalo entre a venda e a confirmação do pagamento: o veículo não está mais
-   à venda, mas também ainda não foi vendido.
-2. **`paymentCode` como chave da integração.** O enunciado pede que o webhook opere *"a partir do
-   código do pagamento"*. Esse código é gerado pelo gateway e guardado na venda com índice único —
-   é ele que liga o mundo externo ao agregado interno, sem expor ids internos ao parceiro.
-3. **Gateway de pagamento atrás de uma porta.** `IPaymentGateway` isola o provedor; hoje há um
-   adapter mock, amanhã um adapter HTTP real, sem tocar em regra de negócio.
-4. **CPF como Value Object.** Validação de dígitos verificadores acontece na construção: é
-   impossível existir um `Sale` com CPF inválido no sistema.
-5. **Entidades imutáveis.** Transições retornam novas instâncias, o que torna o fluxo de estados
-   explícito e livre de efeitos colaterais acidentais.
-6. **Listagem de vendidos sem o CPF do comprador.** Dado pessoal (LGPD) não é exposto em endpoint de
-   catálogo; ele só aparece na resposta da própria operação de venda.
-7. **`saleDate` com padrão no servidor, mas informável.** Data de venda é um fato observado pelo
-   sistema, então o padrão é o instante do registro. Ainda assim o campo é aceito, porque a revenda
-   precisa lançar vendas fechadas fora da plataforma; o domínio rejeita datas futuras.
-8. **Webhook idempotente por rejeição.** Reentrega de notificação não corrompe o estado da venda.
+1. **Identidade fora da API.** Cadastro, login e dados pessoais ficam no Keycloak. A API valida
+   tokens localmente pelas chaves públicas e não chama o Keycloak a cada requisição.
+2. **`buyer_id` opaco em vez de CPF.** A venda precisa saber *quem* comprou, não *os dados* de
+   quem comprou. O `sub` do token resolve isso sem trazer dado pessoal para a base transacional.
+3. **Seguro por padrão.** O guard de autenticação é global. Uma rota nova nasce protegida e só fica
+   pública com `@Public()` explícito.
+4. **Operador e cliente separados.** `admin` cadastra e edita; `customer` compra. O operador não
+   recebe `customer`, então não compra pela API.
+5. **Webhook autenticado por HMAC com timestamp.** O processador de pagamento não tem token OIDC.
+   A assinatura do corpo prova a origem e a integridade, e o timestamp impede replay.
+6. **Estado `RESERVED`.** Entre a compra e a confirmação do pagamento, o veículo não está à venda
+   nem vendido.
+7. **`paymentCode` como chave da integração.** Liga o processador externo à compra, sem expor ids
+   internos.
+8. **Gateway fora da transação.** A chamada ao gateway de pagamento acontece fora da transação, e
+   a disponibilidade do veículo é revalidada dentro dela.
+9. **Entidades imutáveis.** Transições retornam novas instâncias, o que deixa o fluxo de estados
+   explícito.

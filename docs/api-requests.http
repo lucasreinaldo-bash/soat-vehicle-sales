@@ -1,14 +1,50 @@
-# Coleção de requisições da API — Plataforma de Revenda de Veículos
+# Coleção de requisições da API — Plataforma de Revenda de Veículos (Fase 3)
 #
 # Formato compatível com a extensão "REST Client" (VS Code) e com o cliente HTTP
 # do JetBrains. Execute na ordem para percorrer o fluxo completo de negócio.
 # A especificação OpenAPI completa está em http://localhost:3000/docs-json
+#
+# Pré-requisitos:
+#   1. Serviço de identidade no ar (repositório soat-vehicle-identity).
+#   2. Um cliente cadastrado pela tela do Keycloak:
+#      http://localhost:8180/realms/vehicle-sales/account → "Cadastre-se".
+#      Ajuste @clienteEmail e @clienteSenha abaixo.
 
 @host = http://localhost:3000
+@token = http://localhost:8180/realms/vehicle-sales/protocol/openid-connect/token
+@clienteEmail = cliente@exemplo.com
+@clienteSenha = cliente12345
 
-### 1. Cadastrar um veículo para venda
+### ---------------------------------------------------------------------------
+### Login no serviço de identidade
+### ---------------------------------------------------------------------------
+
+### Token do operador da revenda (papel admin)
+# @name loginAdmin
+POST {{token}}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id=vehicle-sales-cli&username=admin@revenda.com&password=admin12345
+
+### Token do cliente cadastrado (papel customer)
+# @name loginCliente
+POST {{token}}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id=vehicle-sales-cli&username={{clienteEmail}}&password={{clienteSenha}}
+
+###
+@admin = {{loginAdmin.response.body.access_token}}
+@cliente = {{loginCliente.response.body.access_token}}
+
+### ---------------------------------------------------------------------------
+### Fluxo principal
+### ---------------------------------------------------------------------------
+
+### 1. Operador cadastra um veículo
 # @name createVehicle
 POST {{host}}/vehicles
+Authorization: Bearer {{admin}}
 Content-Type: application/json
 
 {
@@ -19,11 +55,12 @@ Content-Type: application/json
   "price": 79990.00
 }
 
-### Guarda o id do veículo recém-criado
+###
 @vehicleId = {{createVehicle.response.body.id}}
 
-### 2. Cadastrar outro veículo (mais barato, para conferir a ordenação)
+### 2. Operador cadastra outro veículo (mais barato, para conferir a ordenação)
 POST {{host}}/vehicles
+Authorization: Bearer {{admin}}
 Content-Type: application/json
 
 {
@@ -34,14 +71,15 @@ Content-Type: application/json
   "price": 45900.00
 }
 
-### 3. Listar veículos à venda (ordenados do mais barato para o mais caro)
+### 3. Listar veículos à venda (público, do mais barato para o mais caro)
 GET {{host}}/vehicles/available
 
-### 4. Consultar um veículo específico
+### 4. Consultar um veículo (público)
 GET {{host}}/vehicles/{{vehicleId}}
 
-### 5. Editar os dados do veículo
+### 5. Operador edita os dados do veículo
 PUT {{host}}/vehicles/{{vehicleId}}
+Authorization: Bearer {{admin}}
 Content-Type: application/json
 
 {
@@ -49,91 +87,88 @@ Content-Type: application/json
   "color": "Preto"
 }
 
-### 6. Efetuar a venda do veículo
-# @name sellVehicle
-POST {{host}}/vehicles/{{vehicleId}}/sale
-Content-Type: application/json
+### 6. Cliente compra o veículo (sem corpo: o comprador vem do token)
+# @name purchase
+POST {{host}}/vehicles/{{vehicleId}}/purchase
+Authorization: Bearer {{cliente}}
 
-{
-  "buyerCpf": "529.982.247-25"
-}
-
-### Guarda o código do pagamento devolvido pela venda
-@paymentCode = {{sellVehicle.response.body.paymentCode}}
+###
+@paymentCode = {{purchase.response.body.paymentCode}}
 
 ### 7. O veículo saiu da lista de disponíveis (aguardando pagamento)
 GET {{host}}/vehicles/available
 
-### 8. Webhook: o processador informa que o pagamento FOI EFETUADO
-POST {{host}}/payments/webhook
-Content-Type: application/json
+### 8. Cliente consulta as próprias compras (status PENDING_PAYMENT)
+GET {{host}}/me/purchases
+Authorization: Bearer {{cliente}}
 
-{
-  "paymentCode": "{{paymentCode}}",
-  "status": "PAID"
-}
+### 9. Efetivação da compra
+# O webhook exige assinatura HMAC, que o REST Client não calcula. Use o script,
+# com o paymentCode da resposta do passo 6:
+#
+#   ./scripts/simular-pagamento.sh <paymentCode> PAID
+#
+# Depois, continue pelos passos 10 e 11.
 
-### 9. O veículo agora aparece na lista de vendidos
+### 10. O veículo agora aparece na lista de vendidos
 GET {{host}}/vehicles/sold
 
+### 11. A compra do cliente aparece como PAID
+GET {{host}}/me/purchases
+Authorization: Bearer {{cliente}}
+
 ### ---------------------------------------------------------------------------
-### Cenários alternativos
+### Proteções
 ### ---------------------------------------------------------------------------
 
-### Webhook informando pagamento CANCELADO (devolve o veículo ao catálogo)
+### 401 — compra sem token: só pessoas cadastradas compram
+POST {{host}}/vehicles/{{vehicleId}}/purchase
+
+### 403 — o operador não tem o papel customer e não compra
+POST {{host}}/vehicles/{{vehicleId}}/purchase
+Authorization: Bearer {{admin}}
+
+### 403 — cliente não cadastra veículo
+POST {{host}}/vehicles
+Authorization: Bearer {{cliente}}
+Content-Type: application/json
+
+{
+  "brand": "Fiat",
+  "model": "Uno",
+  "year": 2020,
+  "color": "Branco",
+  "price": 30000.00
+}
+
+### 401 — webhook sem assinatura é recusado e não altera nada
 POST {{host}}/payments/webhook
 Content-Type: application/json
 
 {
   "paymentCode": "{{paymentCode}}",
-  "status": "CANCELLED"
-}
-
-### Venda informando a data explicitamente (lançamento retroativo)
-POST {{host}}/vehicles/{{vehicleId}}/sale
-Content-Type: application/json
-
-{
-  "buyerCpf": "529.982.247-25",
-  "saleDate": "2026-09-01T10:00:00.000Z"
-}
-
-### Erro 400 — data da venda no futuro
-POST {{host}}/vehicles/{{vehicleId}}/sale
-Content-Type: application/json
-
-{
-  "buyerCpf": "529.982.247-25",
-  "saleDate": "2030-01-01T00:00:00.000Z"
-}
-
-### Erro 400 — CPF inválido
-POST {{host}}/vehicles/{{vehicleId}}/sale
-Content-Type: application/json
-
-{
-  "buyerCpf": "111.111.111-11"
-}
-
-### Erro 404 — código de pagamento inexistente
-POST {{host}}/payments/webhook
-Content-Type: application/json
-
-{
-  "paymentCode": "PAY-INEXISTENTE",
   "status": "PAID"
 }
 
-### Erro 409 — tentar vender um veículo que não está disponível
-POST {{host}}/vehicles/{{vehicleId}}/sale
+### 409 — veículo vendido não pode ser comprado de novo
+POST {{host}}/vehicles/{{vehicleId}}/purchase
+Authorization: Bearer {{cliente}}
+
+### 400 — cadastro com dados inválidos
+POST {{host}}/vehicles
+Authorization: Bearer {{admin}}
 Content-Type: application/json
 
 {
-  "buyerCpf": "529.982.247-25"
+  "brand": "",
+  "model": "Gol",
+  "year": 1800,
+  "color": "Prata",
+  "price": -1
 }
 
 ### ---------------------------------------------------------------------------
-### Health checks (usados pelas probes do Kubernetes)
+### Health checks (públicos; usados pelas probes do Kubernetes)
 ### ---------------------------------------------------------------------------
 
 ### Liveness

@@ -1,6 +1,6 @@
 # Documento de Arquitetura
 
-Plataforma de Revenda de Veículos — Tech Challenge Fase 2 (SOAT PósTech)
+Plataforma de Revenda de Veículos — Tech Challenge Fase 3 (SOAT PósTech)
 
 Este documento detalha as decisões técnicas da solução: como Clean Architecture e SOLID foram
 aplicados de forma prescritiva, por que o domínio foi modelado desta maneira, quais trade-offs foram
@@ -18,6 +18,11 @@ assíncrona (webhook).
 
 Toda a modelagem decorre dessa constatação.
 
+A Fase 3 acrescenta uma segunda força: **só pessoas cadastradas compram, e os dados delas não
+pertencem a este serviço**. Cadastro e autenticação foram para um serviço de identidade apartado
+(Keycloak, repositório `soat-vehicle-identity`). Esta API passou a ser apenas consumidora de tokens.
+A seção 5 detalha essa fronteira.
+
 ---
 
 ## 2. Camadas e a regra da dependência
@@ -29,6 +34,7 @@ depender para dentro**.
 ┌──────────────────────────────────────────────────────────────┐
 │  INFRASTRUCTURE (src/infrastructure)                         │
 │  Controllers HTTP · DTOs · Swagger · ExceptionFilter         │
+│  Guards: JWT (JWKS) · papéis · assinatura HMAC do webhook    │
 │  Prisma · Repositórios · Unit of Work · Payment Adapter      │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  APPLICATION (src/application)                         │  │
@@ -36,7 +42,6 @@ depender para dentro**.
 │  │  ┌──────────────────────────────────────────────────┐  │  │
 │  │  │  DOMAIN (src/domain)                             │  │  │
 │  │  │  Entities: Vehicle, Sale                         │  │  │
-│  │  │  Value Objects: Cpf                              │  │  │
 │  │  │  Domain Errors                                   │  │  │
 │  │  │  ← não importa NADA das camadas externas         │  │  │
 │  │  └──────────────────────────────────────────────────┘  │  │
@@ -47,14 +52,14 @@ depender para dentro**.
 ### 2.1 Domain (`src/domain`)
 
 Contém as regras que existiriam mesmo que a revenda operasse em papel: o que é um veículo válido,
-quais transições de estado são permitidas, o que torna um CPF legítimo.
+quais transições de estado são permitidas, quando uma venda pode ser confirmada.
 
-**O que existe aqui:** entidades (`Vehicle`, `Sale`), Value Object (`Cpf`) e a hierarquia de erros
+**O que existe aqui:** entidades (`Vehicle`, `Sale`) e a hierarquia de erros
 de domínio (`NotFoundError`, `ValidationError`, `ConflictError`).
 
 **O que NÃO existe aqui:** nenhum import de NestJS, de Express, de HTTP, de Prisma. A única
 dependência externa é o tipo `Decimal` do runtime do Prisma, usado para aritmética monetária exata —
-um pragmatismo consciente, discutido na seção 6.3.
+um pragmatismo consciente, discutido na seção 7.3.
 
 Características de projeto:
 
@@ -65,9 +70,9 @@ Características de projeto:
   caminho para nascer um veículo novo; `Vehicle.restore()` reconstrói a partir do banco sem
   revalidar (os dados já foram validados quando entraram). Não é possível instanciar uma entidade
   em estado inválido.
-- **Validação na fronteira do tipo.** `Cpf.create()` roda o algoritmo de dígitos verificadores e
-  lança se falhar. Como `Sale.create()` exige um `Cpf` (não uma `string`), é **estruturalmente
-  impossível** existir uma venda com CPF inválido no sistema.
+- **Comprador opaco.** `Sale.create()` recebe um `buyerId` e recusa valor vazio
+  (`InvalidBuyerError`). O domínio não sabe de onde o identificador vem, nem que é o `sub` de um
+  JWT. Na Fase 2 havia um Value Object `Cpf`; ele foi removido junto com o dado pessoal.
 
 ### 2.2 Application (`src/application`)
 
@@ -114,9 +119,12 @@ e o que ele compra.
 
 ### Single Responsibility Principle
 
-Cada caso de uso tem uma razão para mudar. `SellVehicleUseCase` muda se as regras de venda mudarem;
+Cada caso de uso tem uma razão para mudar. `PurchaseVehicleUseCase` muda se as regras de compra mudarem;
 `ProcessPaymentWebhookUseCase` muda se o protocolo de confirmação mudar. São arquivos diferentes
 porque são decisões de negócio diferentes.
+
+O mesmo vale na borda: `JwtAuthGuard` autentica, `RolesGuard` autoriza e `WebhookSignatureGuard`
+verifica a origem do webhook. Cada um pode mudar sem tocar nos outros.
 
 Os controllers não contêm regra alguma — traduzem HTTP para caso de uso e domínio para DTO. O
 `DomainExceptionFilter` centraliza a tradução erro → status HTTP, de modo que nenhum controller
@@ -194,12 +202,12 @@ Um pagamento recusado não é o fim do veículo — é o fim daquela tentativa d
 registro histórico. Há um teste explícito para esse ciclo completo (venda → cancelamento → nova
 venda → confirmação).
 
-### 4.4 Por que a data da venda não vem do cliente
+### 4.4 Por que a data da compra não vem do cliente
 
-O enunciado lista "data da venda" como dado da venda. A implementação a atribui no servidor
-(`Sale.create()` usa o instante corrente) em vez de aceitá-la no corpo da requisição. Uma data de
-venda é um **fato observado pelo sistema**, não uma preferência do chamador; aceitá-la de fora
-abriria espaço para inconsistências e adulteração, sem nenhum ganho funcional.
+`Sale.create()` usa o instante corrente. Na Fase 2 a data podia ser informada pelo operador, para
+lançar vendas fechadas na loja física. Na Fase 3 quem compra é o próprio cliente, pela internet, e
+a data da compra é um **fato observado pelo sistema**. Aceitá-la do cliente só abriria espaço para
+adulteração.
 
 ### 4.5 Por que o preço é copiado para a venda
 
@@ -207,15 +215,85 @@ abriria espaço para inconsistências e adulteração, sem nenhum ganho funciona
 depois (e um veículo cuja venda foi cancelada frequentemente é reprecificado). Sem essa cópia, o
 histórico financeiro mudaria retroativamente a cada edição de catálogo.
 
-### 4.6 Por que a listagem de vendidos não expõe o CPF
+### 4.6 Por que a venda guarda só o `buyerId`
 
-CPF é dado pessoal sob a LGPD. Um endpoint de catálogo — consumido por qualquer tela pública de
-"veículos vendidos" — não tem propósito legítimo para expor o CPF do comprador. Ele é retornado
-apenas na resposta da própria operação de venda, para quem a executou.
+A venda precisa responder *quem comprou*, não *quais são os dados de quem comprou*. O `sub` do
+token é estável, único por pessoa e não carrega significado fora do serviço de identidade. Com
+ele, a API resolve tudo o que precisa: vincular a compra ao comprador e listar as compras de cada
+cliente.
+
+Guardar o CPF aqui criaria uma segunda cópia de dado pessoal sob a LGPD, com duas fontes da
+verdade e dois lugares para proteger. A migration
+`20261030000000_buyer_id_sem_cpf` removeu a coluna `buyer_cpf`. As vendas da Fase 2 receberam um
+`buyer_id` marcado como legado (`legado-fase-2:<id da venda>`), porque não têm conta no serviço de
+identidade.
 
 ---
 
-## 5. Consistência transacional
+## 5. Identidade apartada e autorização
+
+### 5.1 A fronteira
+
+O enunciado pede que cadastro e autorização do comprador fiquem num serviço **totalmente
+apartado**, com os dados do cliente separados dos dados transacionais. A fronteira escolhida:
+
+| Fica no serviço de identidade | Fica nesta API |
+|---|---|
+| Nome, e-mail, CPF, senha | Veículos, vendas, `buyer_id` |
+| Tela de cadastro e login | Validação do token |
+| Política de senha, bloqueio por força bruta | Regras de compra |
+| Emissão e assinatura de tokens | Autorização por papel |
+
+A API não consulta o Keycloak a cada requisição. Ela baixa as chaves públicas (JWKS), mantém em
+cache por até 10 minutos (padrão do `jose`) e valida cada token localmente. Uma queda curta do
+Keycloak não derruba as compras de quem já tem token. Quando o cache expira e o JWKS não responde,
+a API devolve **503**, não 401: indisponibilidade não é culpa de quem chamou.
+
+### 5.2 Por que Keycloak, e não um serviço próprio
+
+Autenticação é uma área em que erros custam caro: armazenamento de senha, força bruta,
+recuperação de conta, rotação de chaves. O Keycloak entrega isso pronto, com OIDC padrão. O
+enunciado admite Keycloak, Cognito, Auth0 ou serviço próprio. A API depende apenas do contrato OIDC
+(emissor, audiência, JWKS e o formato dos papéis), então trocar de provedor é configuração.
+
+### 5.3 O que a API verifica em cada token
+
+`JwtTokenVerifier` usa a biblioteca `jose` e exige:
+
+- assinatura RS256 válida, por uma chave do JWKS do emissor;
+- `iss` igual a `AUTH_ISSUER`, para recusar tokens de outro realm;
+- `aud` contendo `AUTH_AUDIENCE`, para recusar tokens emitidos para outra aplicação;
+- `exp` no futuro.
+
+O algoritmo é fixado: um token com `alg: none` ou HS256 é recusado. Isso fecha o ataque clássico
+de confusão de algoritmo.
+
+### 5.4 Seguro por padrão
+
+`JwtAuthGuard` é registrado como guard **global** (`APP_GUARD`). Toda rota nasce protegida; ficar
+pública exige o decorator `@Public()` explícito. O risco que isso elimina é o de esquecer de
+proteger uma rota nova. Errar para o lado do 401 é seguro; errar para o lado do acesso aberto, não.
+
+`RolesGuard` roda em seguida e compara `@Roles(...)` com `realm_access.roles` do token.
+
+### 5.5 Dois papéis, separados nos dois sentidos
+
+`admin` cadastra e edita veículos. `customer` compra. O papel `customer` vem do papel padrão do
+realm, então todo cliente que se cadastra o recebe automaticamente.
+
+O operador **não** tem `customer`. O Keycloak expande papéis compostos dentro do token, e o papel
+padrão inclui `customer`. Se o operador o herdasse, conseguiria comprar pela API. O realm importa o
+operador só com `admin`, e o teste de fumaça do repositório de identidade verifica isso.
+
+### 5.6 O caso de uso não sabe o que é um token
+
+O controller extrai o usuário com `@CurrentUser()` e chama
+`PurchaseVehicleUseCase.execute({ vehicleId, buyerId })`. O caso de uso recebe uma `string`. Trocar
+JWT por sessão, mTLS ou qualquer outra coisa não altera a camada de aplicação.
+
+---
+
+## 6. Consistência transacional
 
 Tanto a venda quanto o webhook alteram **dois agregados** (`Sale` e `Vehicle`) na mesma operação de
 negócio. Sem atomicidade, uma falha entre as duas escritas deixaria o sistema em estado
@@ -251,9 +329,9 @@ revalidação transacional é proporcional ao problema — e está documentada e
 
 ---
 
-## 6. Trade-offs assumidos
+## 7. Trade-offs assumidos
 
-### 6.1 NestJS na camada de aplicação
+### 7.1 NestJS na camada de aplicação
 
 Os casos de uso carregam decorators `@Injectable()` e `@Inject()`, o que é um acoplamento ao
 framework em uma camada que, em uma leitura purista de Clean Architecture, deveria ser agnóstica.
@@ -264,14 +342,14 @@ framework algum, como os testes unitários demonstram (nenhum deles inicializa u
 alternativa — uma fábrica manual de injeção — adicionaria código de infraestrutura sem ganho
 prático de isolamento.
 
-### 6.2 Um agregado, um repositório
+### 7.2 Um agregado, um repositório
 
 `Vehicle` e `Sale` são agregados distintos, cada um com seu repositório, ligados por `vehicleId` em
 vez de uma referência de objeto. Isso mantém os agregados pequenos e as transições de estado
 independentes, ao custo de exigir o Unit of Work quando os dois precisam mudar juntos — um custo
 que vale a granularidade.
 
-### 6.3 `Decimal` do Prisma no domínio
+### 7.3 `Decimal` do Prisma no domínio
 
 Valores monetários exigem aritmética decimal exata (`0.1 + 0.2 !== 0.3` em ponto flutuante). Usar o
 `Decimal` do runtime do Prisma introduz um import de biblioteca externa no domínio. A alternativa
@@ -281,47 +359,67 @@ canônica seria um Value Object `Money` próprio, encapsulando a biblioteca.
 conexão, I/O nem estado. Se um dia essa escolha incomodar, introduzir `Money` é uma refatoração
 local e mecânica, porque o tipo já está confinado às entidades.
 
-### 6.4 Gateway de pagamento mock
+### 7.4 Gateway de pagamento mock
 
 Não há um provedor real de pagamento no escopo do desafio. O `MockPaymentGatewayAdapter` gera um
 código de cobrança e não faz I/O. O que importa arquiteturalmente é que ele está **atrás de uma
 porta**: o mock e um adapter real são intercambiáveis sem que uma linha de regra de negócio mude.
 
-### 6.5 Webhook sem autenticação
+### 7.5 Webhook assinado com HMAC, não com JWT
 
-O endpoint `POST /payments/webhook` está aberto. Em produção isso seria inaceitável: um webhook de
-pagamento precisa de verificação de assinatura HMAC do corpo da requisição, validação de origem e
-proteção contra replay por timestamp. Foi deixado fora porque o enunciado não define um contrato de
-autenticação com a entidade de pagamento, e inventar um seria adivinhar. O ponto de extensão é
-óbvio: um `Guard` do Nest aplicado ao controller, sem tocar no caso de uso.
+O processador de pagamento é um sistema externo, sem conta no Keycloak. O padrão de mercado para
+webhooks (Stripe, Mercado Pago, GitHub) é a assinatura do corpo com um segredo compartilhado, e foi
+o adotado. Na Fase 2 o webhook estava aberto; a Fase 3 fechou essa lacuna.
+
+- A assinatura é `HMAC-SHA256(segredo, "<timestamp>.<corpo bruto>")`, enviada em
+  `X-Webhook-Signature`, com o timestamp em `X-Webhook-Timestamp`.
+- A API verifica sobre os **bytes recebidos** (`rawBody`), não sobre o JSON reserializado. Uma
+  diferença de espaço ou de ordem de campos quebraria a assinatura.
+- A comparação usa `timingSafeEqual`, para não vazar a assinatura por tempo de resposta.
+- Notificações com mais de 5 minutos são recusadas. Como o timestamp está dentro da assinatura,
+  não dá para trocá-lo sem invalidá-la.
+- A API não sobe sem `PAYMENT_WEBHOOK_SECRET` com pelo menos 16 caracteres.
+
+O limite assumido: dentro da janela de 5 minutos, uma notificação capturada poderia ser reenviada.
+O efeito é nulo, porque o webhook é idempotente por rejeição (409 na segunda vez).
 
 ---
 
-## 7. Estratégia de testes
+## 8. Estratégia de testes
 
 | Nível | Escopo | Dependências externas | Onde |
 |---|---|---|---|
-| Unitário — domínio | Invariantes das entidades, algoritmo do CPF, transições de estado | Nenhuma | `src/domain/**/*.spec.ts` |
+| Unitário — domínio | Invariantes das entidades e transições de estado | Nenhuma | `src/domain/**/*.spec.ts` |
+| Unitário — borda | Verificação de token (assinatura, emissor, audiência, expiração, algoritmo, JWKS fora do ar), guards de papel, assinatura do webhook | Nenhuma (JWKS local) | `src/infrastructure/http/**/*.spec.ts` |
 | Unitário — aplicação | Orquestração dos casos de uso, regras de conflito, ordenação | Repositórios fake em memória | `src/application/**/*.spec.ts` |
-| End-to-end | Fluxo real HTTP → controller → caso de uso → Prisma → PostgreSQL | PostgreSQL | `test/e2e/` |
+| End-to-end | Fluxo real HTTP → guards → controller → caso de uso → Prisma → PostgreSQL | PostgreSQL e um emissor JWT local | `test/e2e/` |
+| Fumaça da identidade | Realm, papéis, cadastro, conteúdo do token | Keycloak real | repositório `soat-vehicle-identity` |
 
 A pirâmide é intencional: a base cobre as regras de negócio (rápida, sem I/O, executável em
 qualquer máquina sem setup) e o topo confirma que a fiação entre as camadas está correta. Cenários
-cobertos nos e2e incluem o fluxo completo de venda com confirmação, com cancelamento e recolocação
-no catálogo, tentativa de venda duplicada, CPF inválido, reprocessamento de webhook e edição de
-veículo vendido.
+cobertos nos e2e incluem:
+
+- o fluxo completo de compra, com confirmação e com cancelamento;
+- compra sem token, com token adulterado e pelo operador;
+- disputa entre dois clientes pelo mesmo veículo;
+- webhook sem assinatura, com segredo errado, com corpo adulterado e antigo;
+- isolamento de `/me/purchases` entre clientes;
+- a ausência de coluna de CPF na tabela de vendas.
+
+As proteções foram conferidas também por **mutação**: desligar cada verificação no código fez os
+testes correspondentes falharem.
 
 ---
 
-## 8. Decisões de infraestrutura
+## 9. Decisões de infraestrutura
 
-### 8.1 Imagem Docker
+### 9.1 Imagem Docker
 
 Build **multi-stage**: o primeiro estágio compila o TypeScript e gera o client do Prisma; o segundo
 recebe apenas `dist/`, `node_modules` de produção (após `npm prune --omit=dev`) e o schema. O
 resultado é uma imagem menor, sem toolchain de build, executando como usuário **não-root**.
 
-### 8.2 Migrations
+### 9.2 Migrations
 
 No Docker Compose, o `CMD` da imagem roda `prisma migrate deploy` antes de subir a API — um único
 container, sem disputa.
@@ -331,7 +429,7 @@ simultaneamente. A solução é um **initContainer** `run-migrations`, que execu
 antes de qualquer réplica iniciar, precedido de um initContainer `wait-for-db` que aguarda o
 PostgreSQL aceitar conexões.
 
-### 8.3 Probes com propósitos distintos
+### 9.3 Probes com propósitos distintos
 
 - `/health` (**liveness**) responde sem tocar no banco. Se o PostgreSQL cair, reiniciar os pods da
   API não resolve nada — só multiplica o dano. Liveness deve detectar processo travado, não
@@ -342,10 +440,10 @@ PostgreSQL aceitar conexões.
 Essa distinção é frequentemente ignorada, e o resultado é um cluster em crash-loop durante
 incidentes de banco.
 
-### 8.4 ConfigMap e Secret
+### 9.4 ConfigMap e Secret
 
-Configuração não sensível (host, porta, nome do banco, usuário, `NODE_ENV`) fica no **ConfigMap**; a
-senha fica no **Secret**. A `DATABASE_URL` é composta em runtime a partir das duas fontes, para que
+Configuração não sensível (host, porta, nome do banco, usuário, `NODE_ENV`, emissor e endereço do
+JWKS) fica no **ConfigMap**; a senha do banco e o segredo do webhook ficam no **Secret**. A `DATABASE_URL` é composta em runtime a partir das duas fontes, para que
 a senha nunca apareça em um manifesto de configuração.
 
 O `Secret` está versionado no repositório **apenas para reprodutibilidade da avaliação** — o próprio
@@ -354,15 +452,15 @@ cofre gerenciado.
 
 ---
 
-## 9. Evolução natural
+## 10. Evolução natural
 
 Ordenado por retorno sobre esforço, caso a plataforma fosse para produção:
 
-1. **Autenticação e autorização** — JWT/OIDC separando o público (catálogo) do operador da revenda
-   (cadastro, edição, venda).
-2. **Assinatura HMAC no webhook** — verificação de origem, conforme seção 6.5.
+1. ~~Autenticação e autorização~~ e ~~assinatura HMAC no webhook~~: entregues na Fase 3
+   (seções 5 e 7.5).
+2. **Rotação do segredo do webhook** — aceitar dois segredos durante a troca.
 3. **Adapter de pagamento real** — substituição do mock, com retry, timeout e circuit breaker.
-4. **Bloqueio pessimista ou otimista na reserva** — conforme seção 5.
+4. **Bloqueio pessimista ou otimista na reserva** — conforme seção 6.
 5. **Observabilidade** — logging estruturado com correlation id, métricas Prometheus e tracing
    distribuído, especialmente no salto assíncrono entre venda e webhook.
 6. **Paginação nas listagens** — o catálogo cresce; `GET /vehicles/available` precisará de
