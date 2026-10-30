@@ -5,28 +5,31 @@ Descrição dos recursos que compõem a solução no cluster, na ordem em que de
 | Ordem | Arquivo | Recursos | Papel |
 |---|---|---|---|
 | 00 | `00-namespace.yaml` | `Namespace` | Isola todos os recursos em `vehicle-sales` |
-| 01 | `01-configmap.yaml` | `ConfigMap` | Configuração **não sensível**: `NODE_ENV`, `PORT`, host/porta/base/usuário do banco |
-| 02 | `02-secret.yaml` | `Secret` | Dado **sensível**: senha do banco |
+| 01 | `01-configmap.yaml` | `ConfigMap` | Configuração **não sensível**: `NODE_ENV`, `PORT`, host/porta/base/usuário do banco, emissor, audiência e endereço do JWKS do serviço de identidade |
+| 02 | `02-secret.yaml` | `Secret` | Dados **sensíveis**: senha do banco e segredo do webhook de pagamento |
 | 03 | `03-postgres.yaml` | `PersistentVolumeClaim`, `Deployment`, `Service` | PostgreSQL com volume persistente, exposto só internamente (ClusterIP) |
 | 04 | `04-api.yaml` | `Deployment`, `Service` | API com 2 réplicas, initContainers de migration, probes e NodePort |
 | 05 | `05-hpa.yaml` | `HorizontalPodAutoscaler` | Escala de 2 a 10 réplicas conforme CPU/memória |
 
 ## Subindo tudo
 
-```bash
-# Automatizado (build da imagem + apply + espera o rollout)
-./k8s/deploy.sh
+Pré-requisito: o serviço de identidade publicado no namespace `vehicle-identity`, pelo
+`k8s/deploy.sh` do repositório
+[soat-vehicle-identity](https://github.com/lucasreinaldo-bash/soat-vehicle-identity). Sem ele, a
+API sobe, mas toda rota protegida responde 503.
 
-# Ou manualmente
-kubectl apply -f k8s/
+```bash
+./k8s/deploy.sh
 ```
 
-> Em minikube, construa a imagem dentro do daemon do cluster para que
-> `imagePullPolicy: IfNotPresent` a encontre:
-> ```bash
-> eval $(minikube docker-env)
-> docker build -t vehicle-sales-api:latest .
-> ```
+O script constrói a imagem `vehicle-sales-api:<sha do commit>` dentro do daemon do minikube,
+aplica os manifestos trocando a tag `latest` pela do commit e espera o rollout. É o mesmo script
+que o pipeline de CD executa a cada merge na `main`, seguido de
+[`scripts/verificar-deploy.sh`](../scripts/verificar-deploy.sh).
+
+A tag por commit importa. Com uma tag fixa, o Deployment não muda entre versões e o Kubernetes não
+faz rollout. Com a tag do commit, cada versão nova gera um rollout, e
+`kubectl -n vehicle-sales get deploy vehicle-sales-api -o wide` mostra qual commit está no ar.
 
 ## Acessando a API
 
