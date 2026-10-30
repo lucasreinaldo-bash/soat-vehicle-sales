@@ -14,3 +14,7 @@ data:
   DATABASE_PORT: '5432'
   DATABASE_NAME: 'vehicle_sales'
   DATABASE_USER: 'vehicles'
+  # Serviço de identidade, publicado no namespace vehicle-identity.
+  AUTH_ISSUER: 'http://localhost:8180/realms/vehicle-sales'
+  AUTH_AUDIENCE: 'vehicle-sales-api'
+  AUTH_JWKS_URI: 'http://keycloak.vehicle-identity.svc.cluster.local:8080/realms/vehicle-sales/protocol/openid-connect/certs'

@@ -1,4 +1,5 @@
-# Sobe toda a solução localmente com um único comando: docker compose up
+# API de vendas e o seu banco. O serviço de identidade é APARTADO e sobe pelo
+# próprio repositório (soat-vehicle-identity); suba-o antes: docker compose up
 services:
   db:
     image: postgres:16-alpine
@@ -24,6 +25,11 @@ services:
       DATABASE_URL: postgresql://vehicles:vehicles@db:5432/vehicle_sales?schema=public
       PORT: 3000
       NODE_ENV: production
+      # Validação dos tokens emitidos pelo serviço de identidade. O emissor é o
+      # endereço público do Keycloak; as chaves são buscadas pela rede interna.
+      AUTH_ISSUER: http://localhost:8180/realms/vehicle-sales
+      AUTH_AUDIENCE: vehicle-sales-api
+      AUTH_JWKS_URI: http://keycloak:8080/realms/vehicle-sales/protocol/openid-connect/certs
     ports:
       - '3000:3000'
     # Só inicia depois que o Postgres estiver realmente aceitando conexões,
@@ -32,6 +38,16 @@ services:
       db:
         condition: service_healthy
     restart: on-failure
+    # A API participa das duas redes; o banco de vendas, só da sua. Os bancos
+    # de vendas e de identidade nunca compartilham rede.
+    networks: [default, identity]
 
 volumes:
   pgdata:
+
+# Rede criada pelo serviço de identidade. Se ele não estiver no ar, o compose
+# falha com 'network vehicle-identity not found' — suba a identidade primeiro.
+networks:
+  identity:
+    external: true
+    name: vehicle-identity

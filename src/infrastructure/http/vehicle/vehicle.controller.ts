@@ -1,5 +1,12 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Put } from '@nestjs/common';
-import { ApiBody, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiParam,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { CreateVehicleUseCase } from '../../../application/use-cases/vehicle/create-vehicle.usecase';
 import { UpdateVehicleUseCase } from '../../../application/use-cases/vehicle/update-vehicle.usecase';
 import { GetVehicleUseCase } from '../../../application/use-cases/vehicle/get-vehicle.usecase';
@@ -11,6 +18,7 @@ import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { SellVehicleDto } from './dto/sell-vehicle.dto';
 import { VehicleResponseDto } from './dto/vehicle-response.dto';
 import { SellVehicleResponseDto } from './dto/sell-vehicle-response.dto';
+import { Public, Roles } from '../auth/auth.decorators';
 
 @ApiTags('Veículos')
 @Controller('vehicles')
@@ -26,6 +34,10 @@ export class VehicleController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @ApiResponse({ status: 401, description: 'Token ausente, inválido ou expirado' })
+  @ApiResponse({ status: 403, description: 'Exige o papel admin' })
   @ApiOperation({
     summary: 'Cadastrar um veículo para venda',
     description: 'Cria um veículo no catálogo com status AVAILABLE (disponível para venda).',
@@ -37,6 +49,7 @@ export class VehicleController {
     return VehicleResponseDto.fromDomain(vehicle);
   }
 
+  @Public()
   @Get('available')
   @ApiOperation({
     summary: 'Listar veículos à venda',
@@ -49,6 +62,7 @@ export class VehicleController {
     return vehicles.map((vehicle) => VehicleResponseDto.fromDomain(vehicle));
   }
 
+  @Public()
   @Get('sold')
   @ApiOperation({
     summary: 'Listar veículos vendidos',
@@ -61,6 +75,7 @@ export class VehicleController {
     return vehicles.map((vehicle) => VehicleResponseDto.fromDomain(vehicle));
   }
 
+  @Public()
   @Get(':id')
   @ApiOperation({ summary: 'Consultar um veículo pelo id' })
   @ApiParam({ name: 'id', description: 'Identificador do veículo' })
@@ -72,6 +87,10 @@ export class VehicleController {
   }
 
   @Put(':id')
+  @Roles('admin')
+  @ApiBearerAuth()
+  @ApiResponse({ status: 401, description: 'Token ausente, inválido ou expirado' })
+  @ApiResponse({ status: 403, description: 'Exige o papel admin' })
   @ApiOperation({
     summary: 'Editar os dados de um veículo',
     description: 'Atualiza os dados de um veículo. Veículos já vendidos não podem ser editados.',
@@ -90,6 +109,10 @@ export class VehicleController {
 
   @Post(':id/sale')
   @HttpCode(HttpStatus.CREATED)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @ApiResponse({ status: 401, description: 'Token ausente, inválido ou expirado' })
+  @ApiResponse({ status: 403, description: 'Exige o papel admin' })
   @ApiOperation({
     summary: 'Efetuar a venda de um veículo',
     description:

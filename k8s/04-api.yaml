@@ -78,6 +78,16 @@ spec:
             - name: PORT
               valueFrom:
                 configMapKeyRef: { name: vehicle-sales-config, key: PORT }
+            # Validação de tokens do serviço de identidade (sem estes, a API não sobe).
+            - name: AUTH_ISSUER
+              valueFrom:
+                configMapKeyRef: { name: vehicle-sales-config, key: AUTH_ISSUER }
+            - name: AUTH_AUDIENCE
+              valueFrom:
+                configMapKeyRef: { name: vehicle-sales-config, key: AUTH_AUDIENCE }
+            - name: AUTH_JWKS_URI
+              valueFrom:
+                configMapKeyRef: { name: vehicle-sales-config, key: AUTH_JWKS_URI }
             - name: DATABASE_HOST
               valueFrom:
                 configMapKeyRef: { name: vehicle-sales-config, key: DATABASE_HOST }
