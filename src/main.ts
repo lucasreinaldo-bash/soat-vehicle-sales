@@ -19,9 +19,11 @@ async function bootstrap() {
     .setDescription(
       'API da plataforma de revenda de veículos automotores. ' +
         'Permite cadastrar e editar veículos, efetuar vendas e receber notificações de pagamento ' +
-        'via webhook. Tech Challenge Fase 2 — SOAT PósTech.',
+        'via webhook. Rotas de escrita exigem um token JWT emitido pelo serviço de identidade ' +
+        '(botão Authorize). Tech Challenge Fase 3 — SOAT PósTech.',
     )
-    .setVersion('1.0.0')
+    .setVersion('3.0.0')
+    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
     .addTag('Veículos', 'Cadastro, edição, listagens e venda de veículos')
     .addTag('Pagamentos', 'Webhook de notificação de pagamento')
     .addTag('Health', 'Probes de liveness e readiness (Kubernetes)')

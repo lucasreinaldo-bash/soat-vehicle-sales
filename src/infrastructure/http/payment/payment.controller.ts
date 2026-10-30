@@ -3,12 +3,14 @@ import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ProcessPaymentWebhookUseCase } from '../../../application/use-cases/sale/process-payment-webhook.usecase';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import { SaleResponseDto } from './dto/sale-response.dto';
+import { Public } from '../auth/auth.decorators';
 
 @ApiTags('Pagamentos')
 @Controller('payments')
 export class PaymentController {
   constructor(private readonly processPaymentWebhook: ProcessPaymentWebhookUseCase) {}
 
+  @Public()
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

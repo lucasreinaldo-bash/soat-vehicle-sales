@@ -189,9 +189,22 @@ Detalhamento completo, com os trade-offs de cada decisão, em [`docs/ARCHITECTUR
 
 Pré-requisito: Docker com o plugin Compose.
 
+A API valida tokens emitidos pelo **serviço de identidade**, que é apartado e vive em outro
+repositório: [soat-vehicle-identity](https://github.com/lucasreinaldo-bash/soat-vehicle-identity).
+Suba-o primeiro, a partir da pasta dele:
+
+```bash
+docker compose up -d
+```
+
+Depois, nesta pasta:
+
 ```bash
 docker compose up
 ```
+
+A API se conecta à rede `vehicle-identity` apenas para buscar as chaves públicas e validar os
+tokens. O banco de vendas fica numa rede própria e não alcança o banco de identidade.
 
 Isso sobe **toda a solução** com um único comando: o PostgreSQL, e a API (que espera o banco ficar
 saudável, aplica as migrations automaticamente e sobe na porta 3000).

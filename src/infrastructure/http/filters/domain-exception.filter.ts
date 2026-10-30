@@ -55,7 +55,7 @@ export class DomainExceptionFilter implements ExceptionFilter {
         typeof body === 'object' && body && 'message' in body
           ? (body.message as string)
           : String(body);
-      error = 'BadRequest';
+      error = (exception as object).constructor.name;
     } else if (exception instanceof Error) {
       message = exception.message;
       error = exception.constructor.name;
