@@ -1,24 +1,17 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Put } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiBody,
-  ApiOperation,
-  ApiParam,
-  ApiResponse,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CreateVehicleUseCase } from '../../../application/use-cases/vehicle/create-vehicle.usecase';
 import { UpdateVehicleUseCase } from '../../../application/use-cases/vehicle/update-vehicle.usecase';
 import { GetVehicleUseCase } from '../../../application/use-cases/vehicle/get-vehicle.usecase';
 import { ListAvailableVehiclesUseCase } from '../../../application/use-cases/vehicle/list-available-vehicles.usecase';
 import { ListSoldVehiclesUseCase } from '../../../application/use-cases/vehicle/list-sold-vehicles.usecase';
-import { SellVehicleUseCase } from '../../../application/use-cases/sale/sell-vehicle.usecase';
+import { PurchaseVehicleUseCase } from '../../../application/use-cases/sale/purchase-vehicle.usecase';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
-import { SellVehicleDto } from './dto/sell-vehicle.dto';
 import { VehicleResponseDto } from './dto/vehicle-response.dto';
-import { SellVehicleResponseDto } from './dto/sell-vehicle-response.dto';
-import { Public, Roles } from '../auth/auth.decorators';
+import { PurchaseResponseDto } from './dto/purchase-response.dto';
+import { CurrentUser, Public, Roles } from '../auth/auth.decorators';
+import { AuthenticatedUser } from '../auth/authenticated-user';
 
 @ApiTags('Veículos')
 @Controller('vehicles')
@@ -29,7 +22,7 @@ export class VehicleController {
     private readonly getVehicle: GetVehicleUseCase,
     private readonly listAvailableVehicles: ListAvailableVehiclesUseCase,
     private readonly listSoldVehicles: ListSoldVehiclesUseCase,
-    private readonly sellVehicle: SellVehicleUseCase,
+    private readonly purchaseVehicle: PurchaseVehicleUseCase,
   ) {}
 
   @Post()
@@ -107,35 +100,30 @@ export class VehicleController {
     return VehicleResponseDto.fromDomain(vehicle);
   }
 
-  @Post(':id/sale')
+  @Post(':id/purchase')
   @HttpCode(HttpStatus.CREATED)
-  @Roles('admin')
+  @Roles('customer')
   @ApiBearerAuth()
-  @ApiResponse({ status: 401, description: 'Token ausente, inválido ou expirado' })
-  @ApiResponse({ status: 403, description: 'Exige o papel admin' })
   @ApiOperation({
-    summary: 'Efetuar a venda de um veículo',
+    summary: 'Comprar um veículo',
     description:
-      'Registra a venda (CPF do comprador e data da venda, esta atribuída pelo sistema se omitida), ' +
-      'solicita a cobrança ao ' +
-      'processador de pagamento e reserva o veículo. A venda é concluída quando o processador de ' +
-      'pagamento notificar o webhook POST /payments/webhook usando o paymentCode retornado aqui.',
+      'Compra feita pelo próprio cliente, autenticado com o token do serviço de identidade. ' +
+      'O comprador é identificado pelo token — o corpo da requisição é vazio, e nenhum dado ' +
+      'pessoal trafega para esta API. A compra nasce em PENDING_PAYMENT e reserva o veículo; ' +
+      'é efetivada quando o processador de pagamento notifica POST /payments/webhook com o ' +
+      'paymentCode retornado aqui.',
   })
   @ApiParam({ name: 'id', description: 'Identificador do veículo' })
-  @ApiBody({ type: SellVehicleDto })
-  @ApiResponse({ status: 201, description: 'Venda registrada', type: SellVehicleResponseDto })
-  @ApiResponse({ status: 400, description: 'CPF inválido ou data da venda no futuro' })
+  @ApiResponse({ status: 201, description: 'Compra registrada', type: PurchaseResponseDto })
+  @ApiResponse({ status: 401, description: 'Token ausente, inválido ou expirado' })
+  @ApiResponse({ status: 403, description: 'Exige o papel customer (cliente cadastrado)' })
   @ApiResponse({ status: 404, description: 'Veículo não encontrado' })
-  @ApiResponse({ status: 409, description: 'Veículo não está disponível para venda' })
-  async sell(
+  @ApiResponse({ status: 409, description: 'Veículo não está disponível' })
+  async purchase(
     @Param('id') id: string,
-    @Body() dto: SellVehicleDto,
-  ): Promise<SellVehicleResponseDto> {
-    const { sale } = await this.sellVehicle.execute({
-      vehicleId: id,
-      buyerCpf: dto.buyerCpf,
-      saleDate: dto.saleDate ? new Date(dto.saleDate) : undefined,
-    });
-    return SellVehicleResponseDto.fromDomain(sale);
+    @CurrentUser() usuario: AuthenticatedUser,
+  ): Promise<PurchaseResponseDto> {
+    const { sale } = await this.purchaseVehicle.execute({ vehicleId: id, buyerId: usuario.id });
+    return PurchaseResponseDto.fromDomain(sale);
   }
 }

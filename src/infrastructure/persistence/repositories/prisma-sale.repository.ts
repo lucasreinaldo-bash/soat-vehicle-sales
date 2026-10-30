@@ -14,7 +14,7 @@ export class PrismaSaleRepository implements ISaleRepository {
       data: {
         id: sale.id,
         vehicleId: sale.vehicleId,
-        buyerCpf: sale.buyerCpf,
+        buyerId: sale.buyerId,
         price: sale.price,
         saleDate: sale.saleDate,
         status: sale.status,
@@ -52,11 +52,19 @@ export class PrismaSaleRepository implements ISaleRepository {
     return found ? this.toDomain(found) : null;
   }
 
+  async findByBuyerId(buyerId: string): Promise<Sale[]> {
+    const found = await this.prisma.sale.findMany({
+      where: { buyerId },
+      orderBy: { saleDate: 'desc' },
+    });
+    return found.map((sale) => this.toDomain(sale));
+  }
+
   private toDomain(raw: PrismaSale): Sale {
     return Sale.restore({
       id: raw.id,
       vehicleId: raw.vehicleId,
-      buyerCpf: raw.buyerCpf,
+      buyerId: raw.buyerId,
       price: raw.price,
       saleDate: raw.saleDate,
       status: raw.status as SaleStatus,

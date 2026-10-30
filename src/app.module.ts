@@ -6,6 +6,7 @@ import { VehicleModule } from './infrastructure/http/vehicle/vehicle.module';
 import { PaymentModule } from './infrastructure/http/payment/payment.module';
 import { HealthModule } from './infrastructure/http/health/health.module';
 import { AuthModule } from './infrastructure/http/auth/auth.module';
+import { MeModule } from './infrastructure/http/me/me.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { AuthModule } from './infrastructure/http/auth/auth.module';
     AuthModule,
     VehicleModule,
     PaymentModule,
+    MeModule,
     HealthModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: DomainExceptionFilter }],

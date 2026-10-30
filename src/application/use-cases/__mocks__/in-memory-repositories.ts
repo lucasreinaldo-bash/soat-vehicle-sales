@@ -62,6 +62,13 @@ export class InMemorySaleRepository implements ISaleRepository {
     const found = [...this.items.values()].find((sale) => sale.vehicleId === vehicleId);
     return Promise.resolve(found ?? null);
   }
+
+  findByBuyerId(buyerId: string): Promise<Sale[]> {
+    const compras = [...this.items.values()]
+      .filter((sale) => sale.buyerId === buyerId)
+      .sort((x, y) => y.saleDate.getTime() - x.saleDate.getTime());
+    return Promise.resolve(compras);
+  }
 }
 
 export class FakePaymentGateway implements IPaymentGateway {

@@ -14,7 +14,7 @@ export interface ProcessPaymentWebhookInput {
 
 /**
  * Processa a notificação da entidade que processa o pagamento. A partir do
- * `paymentCode` (gerado em SellVehicleUseCase), confirma ou cancela a venda:
+ * `paymentCode` (gerado em PurchaseVehicleUseCase), confirma ou cancela a compra:
  *  - PAID      -> Sale.PAID       + Vehicle.SOLD      (venda concluída)
  *  - CANCELLED -> Sale.CANCELLED  + Vehicle.AVAILABLE (volta ao catálogo)
  *

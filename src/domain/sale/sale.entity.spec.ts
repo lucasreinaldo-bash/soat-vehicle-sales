@@ -1,72 +1,52 @@
 import { Decimal } from '@prisma/client/runtime/library';
 import { Sale, SaleStatus } from './sale.entity';
-import { InvalidSaleDateError } from './sale.errors';
-import { Cpf } from '../shared/value-objects/cpf.vo';
+import { InvalidBuyerError } from './sale.errors';
 
-const buildSale = () =>
+const criar = (buyerId = 'cliente-123') =>
   Sale.create({
     id: 's1',
     vehicleId: 'v1',
-    buyerCpf: Cpf.create('529.982.247-25'),
+    buyerId,
     price: new Decimal('79990.00'),
     paymentCode: 'PAY-123',
   });
 
 describe('Sale (entidade de domínio)', () => {
-  it('nasce aguardando pagamento e registra a data da venda', () => {
-    const before = Date.now();
-    const sale = buildSale();
+  it('nasce aguardando pagamento, com a data da compra definida pelo servidor', () => {
+    const antes = Date.now();
+    const sale = criar();
 
     expect(sale.status).toBe(SaleStatus.PENDING_PAYMENT);
     expect(sale.isPending()).toBe(true);
-    expect(sale.saleDate.getTime()).toBeGreaterThanOrEqual(before);
+    expect(sale.saleDate.getTime()).toBeGreaterThanOrEqual(antes);
   });
 
-  it('armazena o CPF do comprador apenas com dígitos', () => {
-    expect(buildSale().buyerCpf).toBe('52998224725');
+  it('identifica o comprador apenas pelo id opaco do serviço de identidade', () => {
+    const sale = criar('3f2a-sub-do-keycloak');
+    expect(sale.buyerId).toBe('3f2a-sub-do-keycloak');
+  });
+
+  it('não guarda nenhum dado pessoal do comprador', () => {
+    const campos = Object.getOwnPropertyNames(Object.getPrototypeOf(criar()));
+    expect(campos.filter((c) => /cpf|email|nome|name/i.test(c))).toEqual([]);
+  });
+
+  it.each([[''], ['   ']])('rejeita compra sem comprador identificado (%j)', (buyerId) => {
+    expect(() => criar(buyerId)).toThrow(InvalidBuyerError);
   });
 
   it('confirma o pagamento', () => {
-    const paid = buildSale().confirmPayment();
-    expect(paid.status).toBe(SaleStatus.PAID);
-    expect(paid.isPending()).toBe(false);
+    const paga = criar().confirmPayment();
+    expect(paga.status).toBe(SaleStatus.PAID);
+    expect(paga.isPending()).toBe(false);
   });
 
   it('cancela o pagamento', () => {
-    const cancelled = buildSale().cancelPayment();
-    expect(cancelled.status).toBe(SaleStatus.CANCELLED);
-  });
-
-  it('aceita uma data de venda anterior (lançamento retroativo)', () => {
-    const ontem = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const sale = Sale.create({
-      id: 's1',
-      vehicleId: 'v1',
-      buyerCpf: Cpf.create('529.982.247-25'),
-      price: new Decimal('79990.00'),
-      paymentCode: 'PAY-123',
-      saleDate: ontem,
-    });
-
-    expect(sale.saleDate).toEqual(ontem);
-  });
-
-  it('rejeita data de venda no futuro', () => {
-    const amanha = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    expect(() =>
-      Sale.create({
-        id: 's1',
-        vehicleId: 'v1',
-        buyerCpf: Cpf.create('529.982.247-25'),
-        price: new Decimal('79990.00'),
-        paymentCode: 'PAY-123',
-        saleDate: amanha,
-      }),
-    ).toThrow(InvalidSaleDateError);
+    expect(criar().cancelPayment().status).toBe(SaleStatus.CANCELLED);
   });
 
   it('é imutável: transições retornam novas instâncias', () => {
-    const sale = buildSale();
+    const sale = criar();
     sale.confirmPayment();
     expect(sale.status).toBe(SaleStatus.PENDING_PAYMENT);
   });

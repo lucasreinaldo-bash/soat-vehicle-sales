@@ -6,4 +6,6 @@ export interface ISaleRepository {
   findById(id: string): Promise<Sale | null>;
   findByPaymentCode(paymentCode: string): Promise<Sale | null>;
   findByVehicleId(vehicleId: string): Promise<Sale | null>;
+  /** Compras de um cliente, da mais recente para a mais antiga. */
+  findByBuyerId(buyerId: string): Promise<Sale[]>;
 }

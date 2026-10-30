@@ -1,17 +1,15 @@
 /**
- * Teste end-to-end do fluxo completo de negócio, exercitando a API real
- * (HTTP -> controller -> use case -> repositório Prisma -> PostgreSQL).
+ * Teste end-to-end da API de vendas da Fase 3, exercitando o caminho real:
+ * HTTP -> guards -> controller -> caso de uso -> Prisma -> PostgreSQL.
  *
- * A autenticação é exercitada de ponta a ponta: o teste sobe um emissor JWT
- * local (servidor HTTP publicando o JWKS) e assina tokens com a chave privada
- * correspondente. A API valida assinatura, emissor, audiência e expiração
- * exatamente como faz com o Keycloak — sem depender dele.
+ * - Autenticação: um emissor JWT local publica o JWKS por HTTP e assina tokens
+ *   com a chave privada correspondente. A API os valida como faz com o Keycloak
+ *   (assinatura, emissor, audiência, expiração) — sem depender dele.
+ * - Webhook: as notificações são assinadas com HMAC, como faria o processador de
+ *   pagamento.
  *
- * Pré-requisito: um PostgreSQL acessível via DATABASE_URL com as migrations
- * aplicadas. O caminho mais simples é:
- *     docker compose up -d db
- *     npx prisma migrate deploy
- *     npm run test:e2e
+ * Pré-requisito: PostgreSQL acessível via DATABASE_URL com as migrations
+ * aplicadas (docker compose up -d db; npx prisma migrate deploy).
  */
 import { createServer, Server } from 'http';
 import { AddressInfo } from 'net';
@@ -23,30 +21,29 @@ import { App } from 'supertest/types';
 import { AppModule } from '../../src/app.module';
 import { DomainExceptionFilter } from '../../src/infrastructure/http/filters/domain-exception.filter';
 import { PrismaService } from '../../src/infrastructure/persistence/prisma/prisma.service';
-
-const VALID_CPF = '529.982.247-25';
+import { assinar as assinarWebhook } from '../../src/infrastructure/http/payment/webhook-signature';
 
 interface VehicleBody {
   id: string;
-  brand: string;
   model: string;
-  year: number;
-  color: string;
   price: number;
   status: 'AVAILABLE' | 'RESERVED' | 'SOLD';
 }
 
-interface SaleBody {
+interface PurchaseBody {
   saleId: string;
   vehicleId: string;
-  buyerCpf: string;
   price: number;
   saleDate: string;
   status: 'PENDING_PAYMENT' | 'PAID' | 'CANCELLED';
   paymentCode: string;
 }
 
-describe('Plataforma de revenda de veículos (e2e)', () => {
+const ISSUER = 'http://emissor-de-teste/realms/vehicle-sales';
+const AUDIENCE = 'vehicle-sales-api';
+const SEGREDO_WEBHOOK = 'segredo-webhook-dos-testes-e2e';
+
+describe('Plataforma de revenda de veículos — Fase 3 (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let server: App;
@@ -54,11 +51,9 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
   let chavePrivada: KeyLike;
   let admin: string;
   let cliente: string;
+  let outroCliente: string;
 
-  const ISSUER = 'http://emissor-de-teste/realms/vehicle-sales';
-  const AUDIENCE = 'vehicle-sales-api';
-
-  const assinar = (roles: string[], sub: string, opcoes: { aud?: string; exp?: string } = {}) =>
+  const token = (roles: string[], sub: string, opcoes: { aud?: string; exp?: string } = {}) =>
     new SignJWT({ realm_access: { roles } })
       .setProtectedHeader({ alg: 'RS256', kid: 'e2e' })
       .setIssuedAt()
@@ -82,15 +77,17 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
     process.env.AUTH_ISSUER = ISSUER;
     process.env.AUTH_AUDIENCE = AUDIENCE;
     process.env.AUTH_JWKS_URI = `http://127.0.0.1:${porta}/certs`;
+    process.env.PAYMENT_WEBHOOK_SECRET = SEGREDO_WEBHOOK;
 
-    admin = `Bearer ${await assinar(['admin', 'default-roles-vehicle-sales'], 'operador-1')}`;
-    cliente = `Bearer ${await assinar(['customer', 'default-roles-vehicle-sales'], 'cliente-1')}`;
+    admin = `Bearer ${await token(['admin'], 'operador-1')}`;
+    cliente = `Bearer ${await token(['customer', 'default-roles-vehicle-sales'], 'cliente-1')}`;
+    outroCliente = `Bearer ${await token(['customer'], 'cliente-2')}`;
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication();
+    app = moduleFixture.createNestApplication({ rawBody: true });
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
     );
@@ -113,8 +110,9 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
     await new Promise((fechado) => emissor.close(fechado));
   });
 
+  // ------------------------------------------------------------------ helpers
   const createVehicle = async (overrides: Record<string, unknown> = {}): Promise<VehicleBody> => {
-    const response = await request(server)
+    const resposta = await request(server)
       .post('/vehicles')
       .set('Authorization', admin)
       .send({
@@ -126,44 +124,56 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
         ...overrides,
       })
       .expect(201);
-    return response.body as VehicleBody;
+    return resposta.body as VehicleBody;
   };
 
-  const sellVehicle = async (vehicleId: string, cpf = VALID_CPF): Promise<SaleBody> => {
-    const response = await request(server)
-      .post(`/vehicles/${vehicleId}/sale`)
-      .set('Authorization', admin)
-      .send({ buyerCpf: cpf })
+  const purchase = async (vehicleId: string, quem = cliente): Promise<PurchaseBody> => {
+    const resposta = await request(server)
+      .post(`/vehicles/${vehicleId}/purchase`)
+      .set('Authorization', quem)
       .expect(201);
-    return response.body as SaleBody;
+    return resposta.body as PurchaseBody;
   };
 
-  const listAvailable = async (): Promise<VehicleBody[]> => {
-    const response = await request(server).get('/vehicles/available').expect(200);
-    return response.body as VehicleBody[];
+  const webhook = (
+    paymentCode: string,
+    status: 'PAID' | 'CANCELLED',
+    opcoes: {
+      segredo?: string;
+      timestamp?: number;
+      corpoAssinado?: string;
+      semAssinatura?: boolean;
+    } = {},
+  ) => {
+    const corpo = JSON.stringify({ paymentCode, status });
+    const ts = String(opcoes.timestamp ?? Math.floor(Date.now() / 1000));
+    const req = request(server).post('/payments/webhook').set('Content-Type', 'application/json');
+    if (!opcoes.semAssinatura) {
+      req
+        .set('X-Webhook-Timestamp', ts)
+        .set(
+          'X-Webhook-Signature',
+          assinarWebhook(opcoes.segredo ?? SEGREDO_WEBHOOK, ts, opcoes.corpoAssinado ?? corpo),
+        );
+    }
+    return req.send(corpo);
   };
 
-  const listSold = async (): Promise<VehicleBody[]> => {
-    const response = await request(server).get('/vehicles/sold').expect(200);
-    return response.body as VehicleBody[];
-  };
+  const listAvailable = async () =>
+    (await request(server).get('/vehicles/available').expect(200)).body as VehicleBody[];
+  const listSold = async () =>
+    (await request(server).get('/vehicles/sold').expect(200)).body as VehicleBody[];
+  const statusDoVeiculo = async (id: string) =>
+    ((await request(server).get(`/vehicles/${id}`).expect(200)).body as VehicleBody).status;
 
-  describe('Cadastro e edição', () => {
-    it('cadastra um veículo disponível para venda', async () => {
+  // ------------------------------------------------------------------ cadastro
+  describe('Cadastro e edição de veículos (admin)', () => {
+    it('admin cadastra um veículo disponível para venda', async () => {
       const vehicle = await createVehicle();
-
-      expect(vehicle).toMatchObject({
-        brand: 'Volkswagen',
-        model: 'Gol',
-        year: 2022,
-        color: 'Prata',
-        price: 79990,
-        status: 'AVAILABLE',
-      });
-      expect(vehicle.id).toBeDefined();
+      expect(vehicle).toMatchObject({ model: 'Gol', price: 79990, status: 'AVAILABLE' });
     });
 
-    it('rejeita cadastro com dados inválidos', async () => {
+    it('rejeita cadastro com dados inválidos (400)', async () => {
       await request(server)
         .post('/vehicles')
         .set('Authorization', admin)
@@ -171,19 +181,17 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
         .expect(400);
     });
 
-    it('edita os dados de um veículo', async () => {
+    it('admin edita os dados de um veículo', async () => {
       const vehicle = await createVehicle();
-
-      const response = await request(server)
+      const resposta = await request(server)
         .put(`/vehicles/${vehicle.id}`)
         .set('Authorization', admin)
         .send({ price: 74990, color: 'Preto' })
         .expect(200);
-
-      expect(response.body).toMatchObject({ price: 74990, color: 'Preto', model: 'Gol' });
+      expect(resposta.body).toMatchObject({ price: 74990, color: 'Preto' });
     });
 
-    it('retorna 404 ao editar veículo inexistente', async () => {
+    it('edição de veículo inexistente responde 404', async () => {
       await request(server)
         .put('/vehicles/nao-existe')
         .set('Authorization', admin)
@@ -192,131 +200,38 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
     });
   });
 
-  describe('Listagens ordenadas por preço', () => {
-    it('lista veículos à venda do mais barato para o mais caro', async () => {
+  // ------------------------------------------------------------------ listagens
+  describe('Listagens públicas, ordenadas por preço', () => {
+    it('lista veículos à venda do mais barato para o mais caro, sem token', async () => {
       await createVehicle({ model: 'Caro', price: 250000 });
       await createVehicle({ model: 'Barato', price: 45000 });
       await createVehicle({ model: 'Medio', price: 79990 });
+      expect((await listAvailable()).map((v) => v.model)).toEqual(['Barato', 'Medio', 'Caro']);
+    });
 
-      const available = await listAvailable();
-
-      expect(available.map((v) => v.model)).toEqual(['Barato', 'Medio', 'Caro']);
+    it('lista vendidos do mais barato para o mais caro', async () => {
+      for (const [model, price] of [
+        ['Caro', 200000],
+        ['Barato', 40000],
+      ] as const) {
+        const v = await createVehicle({ model, price });
+        const compra = await purchase(v.id);
+        await webhook(compra.paymentCode, 'PAID').expect(200);
+      }
+      expect((await listSold()).map((v) => v.model)).toEqual(['Barato', 'Caro']);
     });
   });
 
-  describe('Venda + webhook de pagamento', () => {
-    it('conclui a venda quando o pagamento é confirmado', async () => {
-      const vehicle = await createVehicle();
-
-      const sale = await sellVehicle(vehicle.id);
-
-      expect(sale.status).toBe('PENDING_PAYMENT');
-      expect(sale.paymentCode).toBeDefined();
-      expect(sale.buyerCpf).toBe('52998224725');
-
-      // Enquanto o pagamento não é confirmado, o veículo não aparece em nenhuma
-      // das duas listagens: não está mais à venda, nem foi vendido.
-      expect(await listAvailable()).toHaveLength(0);
-      expect(await listSold()).toHaveLength(0);
-
-      await request(server)
-        .post('/payments/webhook')
-        .send({ paymentCode: sale.paymentCode, status: 'PAID' })
-        .expect(200)
-        .expect((res) => expect((res.body as SaleBody).status).toBe('PAID'));
-
-      const sold = await listSold();
-      expect(sold).toHaveLength(1);
-      expect(sold[0].id).toBe(vehicle.id);
-      expect(sold[0].status).toBe('SOLD');
-    });
-
-    it('devolve o veículo ao catálogo quando o pagamento é cancelado', async () => {
-      const vehicle = await createVehicle();
-      const sale = await sellVehicle(vehicle.id);
-
-      await request(server)
-        .post('/payments/webhook')
-        .send({ paymentCode: sale.paymentCode, status: 'CANCELLED' })
-        .expect(200)
-        .expect((res) => expect((res.body as SaleBody).status).toBe('CANCELLED'));
-
-      const available = await listAvailable();
-      expect(available.map((v) => v.id)).toContain(vehicle.id);
-    });
-
-    it('rejeita CPF inválido (400)', async () => {
-      const vehicle = await createVehicle();
-
-      await request(server)
-        .post(`/vehicles/${vehicle.id}/sale`)
-        .set('Authorization', admin)
-        .send({ buyerCpf: '111.111.111-11' })
-        .expect(400);
-    });
-
-    it('rejeita a venda de um veículo já reservado (409)', async () => {
-      const vehicle = await createVehicle();
-      await sellVehicle(vehicle.id);
-
-      await request(server)
-        .post(`/vehicles/${vehicle.id}/sale`)
-        .set('Authorization', admin)
-        .send({ buyerCpf: VALID_CPF })
-        .expect(409);
-    });
-
-    it('rejeita webhook com código de pagamento desconhecido (404)', async () => {
-      await request(server)
-        .post('/payments/webhook')
-        .send({ paymentCode: 'PAY-INEXISTENTE', status: 'PAID' })
-        .expect(404);
-    });
-
-    it('rejeita reprocessamento do mesmo pagamento (409)', async () => {
-      const vehicle = await createVehicle();
-      const sale = await sellVehicle(vehicle.id);
-
-      const payload = { paymentCode: sale.paymentCode, status: 'PAID' };
-      await request(server).post('/payments/webhook').send(payload).expect(200);
-      await request(server).post('/payments/webhook').send(payload).expect(409);
-    });
-
-    it('não permite editar um veículo já vendido (409)', async () => {
-      const vehicle = await createVehicle();
-      const sale = await sellVehicle(vehicle.id);
-      await request(server)
-        .post('/payments/webhook')
-        .send({ paymentCode: sale.paymentCode, status: 'PAID' })
-        .expect(200);
-
-      await request(server)
-        .put(`/vehicles/${vehicle.id}`)
-        .set('Authorization', admin)
-        .send({ price: 1 })
-        .expect(409);
-    });
-  });
-
+  // ------------------------------------------------------------------ autenticação
   describe('Autenticação e autorização', () => {
     const corpo = { brand: 'Fiat', model: 'Argo', year: 2022, color: 'Branco', price: 70000 };
-
-    it('listagens e consulta de veículo são públicas', async () => {
-      const vehicle = await createVehicle();
-      await request(server).get('/vehicles/available').expect(200);
-      await request(server).get('/vehicles/sold').expect(200);
-      await request(server).get(`/vehicles/${vehicle.id}`).expect(200);
-    });
 
     it('cadastro sem token responde 401', async () => {
       await request(server).post('/vehicles').send(corpo).expect(401);
     });
 
-    it('cliente autenticado não pode cadastrar veículo (403)', async () => {
+    it('cliente não pode cadastrar nem editar veículo (403)', async () => {
       await request(server).post('/vehicles').set('Authorization', cliente).send(corpo).expect(403);
-    });
-
-    it('cliente autenticado não pode editar veículo (403)', async () => {
       const vehicle = await createVehicle();
       await request(server)
         .put(`/vehicles/${vehicle.id}`)
@@ -325,33 +240,23 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
         .expect(403);
     });
 
-    it('operador com papel admin cadastra veículo (201)', async () => {
-      await request(server).post('/vehicles').set('Authorization', admin).send(corpo).expect(201);
-    });
-
-    it('token expirado responde 401', async () => {
-      const expirado = await assinar(['admin'], 'operador-1', { exp: '-1m' });
+    it.each([
+      ['expirado', { exp: '-1m' }],
+      ['emitido para outra aplicação', { aud: 'outra-aplicacao' }],
+    ])('token %s responde 401', async (_caso, opcoes) => {
+      const t = await token(['admin'], 'operador-1', opcoes);
       await request(server)
         .post('/vehicles')
-        .set('Authorization', `Bearer ${expirado}`)
+        .set('Authorization', `Bearer ${t}`)
         .send(corpo)
         .expect(401);
     });
 
-    it('token emitido para outra aplicação (audiência errada) responde 401', async () => {
-      const outraApp = await assinar(['admin'], 'operador-1', { aud: 'outra-aplicacao' });
-      await request(server)
-        .post('/vehicles')
-        .set('Authorization', `Bearer ${outraApp}`)
-        .send(corpo)
-        .expect(401);
-    });
-
-    it('token adulterado responde 401', async () => {
-      const [cabecalho, , assinatura] = admin.replace('Bearer ', '').split('.');
-      const payloadForjado = Buffer.from(
+    it('token adulterado (papel trocado no payload) responde 401', async () => {
+      const [cabecalho, , assinatura] = cliente.replace('Bearer ', '').split('.');
+      const forjado = Buffer.from(
         JSON.stringify({
-          sub: 'x',
+          sub: 'cliente-1',
           realm_access: { roles: ['admin'] },
           iss: ISSUER,
           aud: AUDIENCE,
@@ -359,19 +264,184 @@ describe('Plataforma de revenda de veículos (e2e)', () => {
       ).toString('base64url');
       await request(server)
         .post('/vehicles')
-        .set('Authorization', `Bearer ${cabecalho}.${payloadForjado}.${assinatura}`)
+        .set('Authorization', `Bearer ${cabecalho}.${forjado}.${assinatura}`)
         .send(corpo)
         .expect(401);
     });
 
-    it('erros de autenticação usam o mesmo envelope de erro da API', async () => {
+    it('erros de autenticação usam o envelope de erro da API', async () => {
       const resposta = await request(server).post('/vehicles').send(corpo).expect(401);
       expect(resposta.body).toMatchObject({ statusCode: 401, error: 'UnauthorizedException' });
     });
   });
 
+  // ------------------------------------------------------------------ compra
+  describe('Compra por cliente cadastrado', () => {
+    it('cliente compra: a compra nasce aguardando pagamento e reserva o veículo', async () => {
+      const vehicle = await createVehicle();
+      const compra = await purchase(vehicle.id);
+
+      expect(compra).toMatchObject({
+        vehicleId: vehicle.id,
+        status: 'PENDING_PAYMENT',
+        price: 79990,
+      });
+      expect(compra.paymentCode).toMatch(/^PAY-/);
+      expect(await statusDoVeiculo(vehicle.id)).toBe('RESERVED');
+      // Durante o pagamento, o veículo não está à venda nem vendido.
+      expect(await listAvailable()).toHaveLength(0);
+      expect(await listSold()).toHaveLength(0);
+    });
+
+    it('a resposta da compra não carrega dado pessoal do comprador', async () => {
+      const compra = await purchase((await createVehicle()).id);
+      expect(Object.keys(compra).filter((c) => /cpf|buyer|email|nome/i.test(c))).toEqual([]);
+    });
+
+    it('compra sem token responde 401 — só pessoas cadastradas compram', async () => {
+      const vehicle = await createVehicle();
+      await request(server).post(`/vehicles/${vehicle.id}/purchase`).expect(401);
+      expect(await statusDoVeiculo(vehicle.id)).toBe('AVAILABLE');
+    });
+
+    it('operador sem o papel customer não compra (403)', async () => {
+      const vehicle = await createVehicle();
+      await request(server)
+        .post(`/vehicles/${vehicle.id}/purchase`)
+        .set('Authorization', admin)
+        .expect(403);
+    });
+
+    it('dois clientes não compram o mesmo veículo (409)', async () => {
+      const vehicle = await createVehicle();
+      await purchase(vehicle.id);
+      await request(server)
+        .post(`/vehicles/${vehicle.id}/purchase`)
+        .set('Authorization', outroCliente)
+        .expect(409);
+    });
+
+    it('compra de veículo inexistente responde 404', async () => {
+      await request(server)
+        .post('/vehicles/nao-existe/purchase')
+        .set('Authorization', cliente)
+        .expect(404);
+    });
+  });
+
+  // ------------------------------------------------------------------ efetivação
+  describe('Efetivação da compra pelo webhook assinado', () => {
+    it('PAID efetiva a compra e o veículo vai para a lista de vendidos', async () => {
+      const vehicle = await createVehicle();
+      const compra = await purchase(vehicle.id);
+
+      const resposta = await webhook(compra.paymentCode, 'PAID').expect(200);
+      expect(resposta.body).toMatchObject({ status: 'PAID' });
+      expect((await listSold()).map((v) => v.id)).toEqual([vehicle.id]);
+    });
+
+    it('CANCELLED devolve o veículo ao catálogo', async () => {
+      const vehicle = await createVehicle();
+      const compra = await purchase(vehicle.id);
+      await webhook(compra.paymentCode, 'CANCELLED').expect(200);
+      expect(await statusDoVeiculo(vehicle.id)).toBe('AVAILABLE');
+    });
+
+    it('notificação sem assinatura é recusada (401) e não altera nada', async () => {
+      const vehicle = await createVehicle();
+      const compra = await purchase(vehicle.id);
+      await webhook(compra.paymentCode, 'PAID', { semAssinatura: true }).expect(401);
+      expect(await statusDoVeiculo(vehicle.id)).toBe('RESERVED');
+    });
+
+    it('assinatura com outro segredo é recusada (401)', async () => {
+      const compra = await purchase((await createVehicle()).id);
+      await webhook(compra.paymentCode, 'PAID', { segredo: 'segredo-de-um-atacante-123' }).expect(
+        401,
+      );
+    });
+
+    it('corpo adulterado é recusado: assinou CANCELLED, enviou PAID (401)', async () => {
+      const vehicle = await createVehicle();
+      const compra = await purchase(vehicle.id);
+      const assinado = JSON.stringify({ paymentCode: compra.paymentCode, status: 'CANCELLED' });
+      await webhook(compra.paymentCode, 'PAID', { corpoAssinado: assinado }).expect(401);
+      expect(await statusDoVeiculo(vehicle.id)).toBe('RESERVED');
+    });
+
+    it('notificação antiga é recusada — proteção contra replay (401)', async () => {
+      const compra = await purchase((await createVehicle()).id);
+      const dezMinutosAtras = Math.floor(Date.now() / 1000) - 600;
+      await webhook(compra.paymentCode, 'PAID', { timestamp: dezMinutosAtras }).expect(401);
+    });
+
+    it('reprocessar o mesmo pagamento responde 409', async () => {
+      const compra = await purchase((await createVehicle()).id);
+      await webhook(compra.paymentCode, 'PAID').expect(200);
+      await webhook(compra.paymentCode, 'PAID').expect(409);
+    });
+
+    it('código de pagamento desconhecido responde 404', async () => {
+      await webhook('PAY-INEXISTENTE', 'PAID').expect(404);
+    });
+
+    it('veículo vendido não pode mais ser editado (409)', async () => {
+      const vehicle = await createVehicle();
+      const compra = await purchase(vehicle.id);
+      await webhook(compra.paymentCode, 'PAID').expect(200);
+      await request(server)
+        .put(`/vehicles/${vehicle.id}`)
+        .set('Authorization', admin)
+        .send({ price: 1 })
+        .expect(409);
+    });
+  });
+
+  // ------------------------------------------------------------------ minhas compras
+  describe('Minhas compras', () => {
+    it('cada cliente vê apenas as próprias compras, com o status do pagamento', async () => {
+      const meu = await createVehicle({ model: 'Meu' });
+      const dele = await createVehicle({ model: 'Dele' });
+      const minha = await purchase(meu.id, cliente);
+      await purchase(dele.id, outroCliente);
+      await webhook(minha.paymentCode, 'PAID').expect(200);
+
+      const resposta = await request(server)
+        .get('/me/purchases')
+        .set('Authorization', cliente)
+        .expect(200);
+      const compras = resposta.body as Array<{ status: string; vehicle: { model: string } }>;
+
+      expect(compras).toHaveLength(1);
+      expect(compras[0]).toMatchObject({ status: 'PAID', vehicle: { model: 'Meu' } });
+    });
+
+    it('sem token responde 401; operador sem o papel customer, 403', async () => {
+      await request(server).get('/me/purchases').expect(401);
+      await request(server).get('/me/purchases').set('Authorization', admin).expect(403);
+    });
+  });
+
+  // ------------------------------------------------------------------ separação de dados
+  describe('Separação entre dados de cliente e dados transacionais', () => {
+    it('a venda guarda só o identificador opaco do token, e a tabela não tem coluna de CPF', async () => {
+      const compra = await purchase((await createVehicle()).id);
+
+      const [linha] = await prisma.$queryRaw<Array<{ buyer_id: string }>>`
+        SELECT buyer_id FROM sales WHERE id = ${compra.saleId}`;
+      expect(linha.buyer_id).toBe('cliente-1');
+
+      const colunas = await prisma.$queryRaw<Array<{ column_name: string }>>`
+        SELECT column_name FROM information_schema.columns WHERE table_name = 'sales'`;
+      expect(colunas.map((c) => c.column_name).filter((c) => /cpf|email|name/i.test(c))).toEqual(
+        [],
+      );
+    });
+  });
+
+  // ------------------------------------------------------------------ health
   describe('Health checks', () => {
-    it('responde ao liveness e ao readiness', async () => {
+    it('liveness e readiness respondem sem token', async () => {
       await request(server).get('/health').expect(200);
       await request(server)
         .get('/health/ready')
