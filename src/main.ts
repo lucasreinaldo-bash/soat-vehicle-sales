@@ -24,7 +24,7 @@ async function bootstrap() {
         'via webhook. Rotas de escrita exigem um token JWT emitido pelo serviço de identidade ' +
         '(botão Authorize). Tech Challenge Fase 3 — SOAT PósTech.',
     )
-    .setVersion('3.0.0')
+    .setVersion('3.0.1')
     .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
     .addTag('Veículos', 'Cadastro, edição, listagens e compra de veículos')
     .addTag('Cliente', 'Área do cliente autenticado')
